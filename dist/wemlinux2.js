@@ -313,6 +313,46 @@ window.webfs = window.webfs || (function() {
   }
 
   /**
+   * 创建软链接（内容以 "LINK:" 前缀存目标路径，read 时自动解析）
+   * @param {string} target - 链接目标路径
+   * @param {string} linkPath - 链接存放路径
+   * @returns {boolean} 是否成功
+   */
+  function symlink(target, linkPath) {
+    var norm = normalizePath(linkPath);
+    if (norm === "/") return false;
+    var parent = norm.substring(0, norm.lastIndexOf("/")) || "/";
+    if (!isDir(parent)) return false;
+    var name = norm.split("/").filter(Boolean).pop();
+    if (!name) return false;
+    var pn = getNode(parent);
+    pn.children[name] = createNode("file", "LINK:" + target, "0777");
+    return true;
+  }
+
+  /**
+   * 读取软链接目标（非软链接返回空串）
+   * @param {string} path - 链接路径
+   * @returns {string} 目标路径或 ""
+   */
+  function readlink(path) {
+    var n = getNode(path);
+    if (!n || n.type !== "file") return "";
+    var c = n.content;
+    return (typeof c === "string" && c.indexOf("LINK:") === 0) ? c.slice(5) : "";
+  }
+
+  /**
+   * 判断路径是否为软链接
+   * @param {string} path - 目标路径
+   * @returns {boolean} 是否为软链接
+   */
+  function isLink(path) {
+    var n = getNode(path);
+    return !!n && n.type === "file" && typeof n.content === "string" && n.content.indexOf("LINK:") === 0;
+  }
+
+  /**
    * 修改文件权限
    * @param {string} path - 目标路径
    * @param {string} mode - 权限位，如 "0755"
@@ -368,7 +408,10 @@ window.webfs = window.webfs || (function() {
     stat: stat,
     chmod: chmod,
     exit: exit,
-    normalizePath: normalizePath
+    normalizePath: normalizePath,
+    symlink: symlink,
+    readlink: readlink,
+    isLink: isLink
   };
 })();
 
@@ -394,9 +437,9 @@ window.getFileModeString = window.getFileModeString || function(path) {
 
 
 /**
- * wemlinux v2.1
- * @author: Evo
- * @date: 2026-08-08
+ * wemlinux v2.3
+ * @author: evo
+ * @date: 2026-08-26
  * @license: MIT License
  */
 
@@ -622,11 +665,18 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         n=n.replace(t,i)
       }
     }const d=t.match(/\$\d+/g);if(d)for(const t of d){const i=e.vars[t]||e.env[t]||"";n=n.replace(t,i)}
-    const s=t.match(/\$\(([^)]*)\)/g);
-    if(s)for(const e of s) {
-      const t=y(e.slice(2,-1));
-      n=n.replace(e,t||"")
-    }return n
+    t.includes("$((")&&(n=n.replace(/\$\(\(([^)]*)\)\)/g,function(m,x){
+      let s=x;
+      s=s.replace(/\$([a-zA-Z_][a-zA-Z0-9_]*)/g,function(mm,vv){return e.vars[vv]||e.env[vv]||mm});
+      s=s.replace(/(^|[^a-zA-Z0-9_])([a-zA-Z_][a-zA-Z0-9_]*)/g,function(mm,p,vv){return p+(void 0!==e.vars[vv]?e.vars[vv]:(void 0!==e.env[vv]?e.env[vv]:mm))});
+      try {
+        const r=Function('"use strict"; return ('+s+")")();
+        return void 0!==r?String(r):m
+      }catch(q) {
+        return m
+      }
+    }))
+    return n
   }function y(e) {
     if(!e||""===e.trim())return"";
     let t="";
@@ -636,7 +686,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }(e.trim());
       t=n
     })(),t
-  }function x(t) {
+  }async function x(t) {
     if(!t)return"";
     const n=t.split("\n");
     let r=[],i=!1,o="",c=[],a=!1,l=[],u="",f="",d=!1,h="",p=[],m=[],w=!1;
@@ -644,10 +694,16 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       const n=t.trim();
       if(!n||n.startsWith("#"))continue;
       if(n.match(/^[^\s{}();&|]+\s*\(\)\s*\{/)) {
-        const e=n.match(/^([^\s{}();&|]+)\s*\(\)\s*\{/);
-        if(e) {
-          o=e[1],i=!0,c=[];
-          const t=n.slice(e[0].length).trim();
+        const m2=n.match(/^([^\s{}();&|]+)\s*\(\)\s*\{/);
+        if(m2) {
+          const braceIdx=n.indexOf("}",m2[0].length);
+          if(braceIdx>-1) {
+            e.functions||(e.functions={});
+            e.functions[m2[1]]=n.slice(m2[0].length,braceIdx).trim();
+            continue
+          }
+          o=m2[1],i=!0,c=[];
+          const t=n.slice(m2[0].length).trim();
           t&&"{"!==t&&c.push(t)
         }continue
       }if(i) {
@@ -659,7 +715,20 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         }c.push(t);
         continue
       }if("if"===n||n.startsWith("if ")) {
-        d=!0,h=n.slice(2).trim(),p=[],m=[],w=!1;
+        const m1=n.match(/^if\s+(.+?);\s*then\s*([\s\S]*)$/);
+        if(m1&&/\bfi\b/.test(m1[2])) {
+          const rest2=m1[2].replace(/;\s*fi\s*$/,"");
+          const ei=rest2.indexOf("; else ");
+          const body1=ei>-1?rest2.slice(0,ei):rest2;
+          const body2=ei>-1?rest2.slice(ei+7):"";
+          const ca=v(m1[1]).split(/\s+/);
+          const t=await s.execute(ca[0],ca.slice(1));
+          const chosen=(""===t||null==t||"0"===t)?body1:body2;
+          if(chosen.trim()) {
+            const o2=await x(chosen);
+            if(o2&&""!==o2)r.push(o2)
+          }continue
+        }d=!0,h=n.slice(2).trim(),p=[],m=[],w=!1;
         continue
       }if(d) {
         if("then"===n)continue;
@@ -668,22 +737,41 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           continue
         }if("fi"===n) {
           d=!1;
-          const e=h.split(/\s+/);
+          const e=v(h).split(/\s+/);
           if(e.length>0) {
-            const t=s.execute(e[0],e.slice(1));
+            const t=await s.execute(e[0],e.slice(1));
             let n=""===t||null==t||"0"===t?p.join("\n"):m.join("\n");
             if(n) {
-              const e=x(n);
+              const e=await x(n);
               e&&r.push(e)
             }
           }continue
         }w?m.push(t):p.push(t);
         continue
       }if("while"===n||n.startsWith("while ")) {
-        a=!0,f="while",u=n.slice(5).trim(),l=[];
+        const m1=n.match(/^while\s+(.+?);\s*do\s*([\s\S]*?);\s*done\s*$/);
+        if(m1) {
+          let cnt=0;
+          while(cnt<100) {
+            const ca=v(m1[1]).split(/\s+/);
+            const t=await s.execute(ca[0],ca.slice(1));
+            if(""!==t&&null!=t&&"0"!==t)break;
+            const o2=await x(m1[2]);
+            if(o2&&""!==o2)r.push(o2);
+            cnt++
+          }continue
+        }a=!0,f="while",u=n.slice(5).trim(),l=[];
         continue
       }if("for"===n||n.startsWith("for ")) {
-        a=!0,f="for",u=n.slice(3).trim(),l=[];
+        const m1=n.match(/^for\s+([a-zA-Z_][a-zA-Z0-9_]*)\s+in\s+(.+?);\s*do\s*([\s\S]*?);\s*done\s*$/);
+        if(m1) {
+          const items=m1[2].trim().split(/\s+/);
+          for(const it of items) {
+            e.vars[m1[1]]=it;
+            const o2=await x(m1[3]);
+            if(o2&&""!==o2)r.push(o2)
+          }continue
+        }a=!0,f="for",u=n.slice(3).trim(),l=[];
         continue
       }if(a) {
         if("do"===n)continue;
@@ -694,11 +782,11 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
             for(;
             e<t;
             ) {
-              const t=u.split(/\s+/);
+              const t=v(u).split(/\s+/);
               if(0===t.length)break;
-              const n=s.execute(t[0],t.slice(1));
+              const n=await s.execute(t[0],t.slice(1));
               if(""!==n&&null!=n&&"0"!==n)break;
-              const i=x(l.join("\n"));
+              const i=await x(l.join("\n"));
               i&&r.push(i),e++
             }
           }else if("for"===f) {
@@ -707,7 +795,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
               const i=u.slice(0,t).trim(),s=u.slice(t+2,n).trim().split(/\s+/);
               for(const t of s) {
                 e.vars[i]=t;
-                const n=x(l.join("\n"));
+                const n=await x(l.join("\n"));
                 n&&r.push(n)
               }
             }
@@ -722,10 +810,9 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           r=v(r),g(n)||(e.vars[n]=r)
         }continue
       }if(n.startsWith("$(")&&n.endsWith(")")) {
-        b(n.slice(2,-1));
+        await b(n.slice(2,-1));
         continue
-      }const y=b(n);
-      if("function"==typeof y.then)return y.then(e=>(e&&""!==e&&r.push(e),r.join("\n")));
+      }const y=await b(n);
       if(y&&""!==y&&r.push(y),"__BREAK__"===y)break;
       if("__RETURN__"===y)break
     }return r.join("\n")
@@ -757,13 +844,13 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     return cmd
   }
   function b(n) {
-    const fnM=n.match(/^([^\s{}();&|]+)\s*\(\)\s*\{([\s\S]*?)\}\s*(.*)$/);
+    const fnM=n.match(/^(?:function\s+)?([^\s{}();&|]+)\s*\(\)\s*\{([\s\S]*?)\}\s*(.*)$/);
     if(fnM) {
       e.functions||(e.functions={});
       e.functions[fnM[1]]=fnM[2].trim();
       const rest=fnM[3].trim();
       if(rest)return b(rest.charAt(0)===";"?rest.slice(1).trim():rest);
-      return Promise.resolve("function "+fnM[1]+" defined")
+      return Promise.resolve("")
     }
     const i=function(t) {
       let n=t;
@@ -788,6 +875,18 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }
     }(i);
     const o=function(e) {
+      const kw=e.match(/^\s*(if|while|for|case)\s+/);
+      if(kw) {
+        const k=kw[1];
+        const ok=(k==="if"&&e.indexOf("then")>-1&&e.indexOf("fi")>-1)||
+                 (k==="while"&&e.indexOf("do")>-1&&e.indexOf("done")>-1)||
+                 (k==="for"&&e.indexOf("in")>-1&&e.indexOf("do")>-1&&e.indexOf("done")>-1)||
+                 (k==="case"&&e.indexOf("esac")>-1)||
+                 (k==="function"&&e.indexOf("{")>-1&&e.indexOf("}")>-1);
+        if(ok)return {
+          type:"simple",cmd:e.trim()
+        };
+      }
       const t=e.split(/\|\|/).map(e=>e.trim());
       if(t.length>1)return {
         type:"or",parts:t
@@ -796,6 +895,13 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       if(n.length>1)return {
         type:"and",parts:n
       };
+      const blk=e.match(/^(.*?);\s*(while\s+[\s\S]*\bdone|for\s+[\s\S]*\bdone|if\s+[\s\S]*\bfi|case\s+[\s\S]*\besac)\s*;?\s*$/);
+      if(blk) {
+        const pre=blk[1].split(";").map(x=>x.trim()).filter(x=>x);
+        return {
+          type:"seq",parts:pre.concat([blk[2].trim()])
+        };
+      }
       const r=e.split(/;/).map(e=>e.trim());
       if(r.length>1)return {
         type:"seq",parts:r
@@ -808,20 +914,29 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }
     }(q.text);
     if("or"===o.type) {
-      let e="",t=!1,n=Promise.resolve();
-      for(const r of o.parts)n=n.then(()=>t?e:b(q.restore(r)).then(n=>(""!==n&&null!=n&&(t=!0,e=n),e)));
+      let out="",t=!1,n=Promise.resolve();
+      for(const r of o.parts)n=n.then(()=>{
+        if(t)return out;
+        return b(q.restore(r)).then(n=>{
+          if(0===e.lastExitCode){t=!0;if(""!==n&&null!=n)out=n}
+          return out
+        })
+      });
       return n
     }if("and"===o.type) {
-      let e=[],t=Promise.resolve();
+      let out=[],t=Promise.resolve(),stop=!1;
       for(const n of o.parts)t=t.then(function() {
+        if(stop)return"";
         return b(q.restore(n)).then(function(t) {
-          return""!==t&&null!=t&&e.push(t),""
+          if(0!==e.lastExitCode){stop=!0;return""}
+          return""!==t&&null!=t&&out.push(t),""
         }).catch(function(x) {
-          return e.push("sh: "+x.message),""
+          stop=!0;
+          return out.push("sh: "+x.message),""
         })
       });
       return t.then(function() {
-        return e.join("\n")
+        return out.join("\n")
       })
     }if("seq"===o.type) {
       let e=[],t=Promise.resolve();
@@ -836,7 +951,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return"sh: error: "+(x&&x.message||x)
       })
     }return function(n,r) {
-      const i=v((r&&r.cmd||n)).trim();
+      const i=(r&&r.cmd||n).trim();
       if(!i)return Promise.resolve("");
       const o=i.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
       if(o) {
@@ -845,8 +960,8 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return n=v(n),g(t)?(e.lastExitCode=1,Promise.resolve("sh: "+t+": readonly variable")):(e.vars[t]=n,e.exported.includes(t)&&(e.env[t]=n),e.lastExitCode=0,Promise.resolve(""))
       }const c=i.split(/\s+/);
       if(0===c.length)return Promise.resolve("");
-      const l=q.restore(c[0]),u=c.slice(1).map(function(x) {
-        const r=q.restore(x);
+      const l=v(q.restore(c[0])),kt=["for","while","if","case","function"],kc=-1<kt.indexOf(l),u=c.slice(1).map(function(x) {
+        const r=kc?q.restore(x):v(q.restore(x));
         return(r.startsWith('"')&&r.endsWith('"'))||(r.startsWith("'")&&r.endsWith("'"))?r.slice(1,-1):r
       });
       let f=s.execute(l,u);
@@ -874,6 +989,13 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     var n=e.trim();
     if(!n)return"";
     if(n.startsWith("#"))return"";
+    if(n.indexOf("\n")>-1) {
+      try {
+        return await x(n)
+      }catch(e) {
+        return"sh: error: "+e.message
+      }
+    }
     var fnDef=n.match(/^([^\s{}();&|]+)\s*\(\)\s*\{([\s\S]*?)\}\s*(.*)$/);
     if(fnDef) {
       if(!window._state.functions)window._state.functions={};
@@ -903,7 +1025,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     if(!t||!n)return void setTimeout(E,100);
     o=!0,t.innerHTML="";
     const e=document.createElement("div");
-    e.textContent='WemLinux v26.1.5 - Type "help" for available commands',t.appendChild(e);
+    e.textContent='WemLinux v2.3 - Type "help" for available commands',t.appendChild(e);
     const s=document.createElement("div");
     s.textContent="$ ",t.appendChild(s),t.scrollTop=t.scrollHeight,n.disabled=!1,n.focus(),n.addEventListener("keydown",async function(e) {
       if("Enter"===e.key) {
@@ -1119,7 +1241,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     "while": "条件循环",
     "who": "登录用户",
     "whoami": "显示当前用户",
-    "yes": "重复输出"
+    "yes": "重复输出y"
         };
         if (e.length > 0) {
             var name = e[0];
@@ -1781,25 +1903,25 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         if(0===e.length)return f("test");
         const t=e.join(" ");
         if(t.startsWith("-e ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
         }if(t.startsWith("-f ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&!webfs.isDir(e)?"":"1"
         }if(t.startsWith("-d ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.isDir&&webfs.isDir(e)?"":"1"
         }if(t.startsWith("-r ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
         }if(t.startsWith("-w ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
         }if(t.startsWith("-x ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
         }if(t.startsWith("-s ")) {
-          const e=l(t.slice(3).trim());
+          const e=webfs.normalizePath(t.slice(3).trim());
           return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&(webfs.getFileSize(e)||0)>0?"":"1"
         }if(t.startsWith("-z ")) {
           const e=t.slice(3).trim();
@@ -1924,7 +2046,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }),s.register("if",function(e) {
         const t=e.join(" "),n=t.indexOf("then"),r=t.indexOf("fi");
         if(-1===n||-1===r)return"if: syntax error";
-        const i=t.slice(0,n).trim(),o=t.slice(n+4,r).trim(),c=i.split(/\s+/);
+        const i=v(t.slice(0,n).replace(/;\s*$/,"").trim()),o=t.slice(n+4,r).trim(),c=i.split(/\s+/);
         if(0===c.length)return"if: missing condition";
         const a=c[0],l=c.slice(1),u=s.execute(a,l);
         return Promise.resolve(u).then(e=> {
@@ -1947,19 +2069,24 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }),s.register("while",function(e) {
         const t=e.join(" "),n=t.indexOf("do"),r=t.indexOf("done");
         if(-1===n||-1===r)return"while: syntax error";
-        const i=t.slice(0,n).trim(),o=t.slice(n+2,r).trim();
+        const i=t.slice(0,n).replace(/;\s*$/,"").trim(),o=t.slice(n+2,r).trim();
         let c=[],a=0;
         return new Promise(e=> {
           !function t() {
             if(a>=100)return void e(c.join("\n"));
-            const n=i.split(/\s+/);
+            const n=v(i).split(/\s+/);
             if(0===n.length)return void e(c.join("\n"));
             const r=s.execute(n[0],n.slice(1));
             Promise.resolve(r).then(n=> {
               if(""===n||null==n||"0"===n)if(o) {
-                const e=b(o);
-                Promise.resolve(e).then(e=> {
-                  e&&""!==e&&c.push(e),a++,setTimeout(t,50)
+                const pb=b(o);
+                Promise.resolve(pb).then(out=> {
+                  const brk="__BREAK__"===out||out&&-1!==out.indexOf("__BREAK__");
+                  if(out) {
+                    const cl=(out||"").split("\n").filter(x=>"__BREAK__"!==x&&"__CONTINUE__"!==x).join("\n");
+                    cl&&c.push(cl)
+                  }if(brk)return e(c.join("\n"));
+                  a++,setTimeout(t,50)
                 })
               }else a++,setTimeout(t,50);
               else e(c.join("\n"))
@@ -1973,7 +2100,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }),s.register("for",function(t) {
         const n=t.join(" "),r=n.indexOf("in"),i=n.indexOf("do"),s=n.indexOf("done");
         if(-1===r||-1===i||-1===s)return"for: syntax error";
-        const o=n.slice(0,r).trim(),c=n.slice(r+2,i).trim(),a=n.slice(i+2,s).trim(),l=c.split(/\s+/);
+        const o=n.slice(0,r).trim(),c=n.slice(r+2,i).replace(/;\s*$/,"").trim(),a=n.slice(i+2,s).replace(/;\s*$/,"").trim(),l=c.split(/\s+/);
         let u=[],f=0;
         return new Promise(t=> {
           !function n() {
@@ -1982,7 +2109,12 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
             if(e.vars[o]=r,a) {
               const e=b(a);
               Promise.resolve(e).then(e=> {
-                e&&""!==e&&u.push(e),f++,setTimeout(n,50)
+                const brk="__BREAK__"===e||e&&-1!==e.indexOf("__BREAK__");
+                if(e) {
+                  const cl=(e||"").split("\n").filter(x=>"__BREAK__"!==x&&"__CONTINUE__"!==x).join("\n");
+                  cl&&u.push(cl)
+                }if(brk)return t(u.join("\n"));
+                f++,setTimeout(n,50)
               })
             }else f++,setTimeout(n,50)
           }()
@@ -1995,7 +2127,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return e.continueLevel=n,"__CONTINUE__"
       }),s.register("function",function(t) {
         if(t.length<2)return"function: syntax error";
-        const n=t[0],r=t.slice(1).join(" "),i=r.indexOf("{");
+        const n=t[0].replace(/\(\)$/,""),r=t.slice(1).join(" "),i=r.indexOf("{");
         if(-1===i)return"function: syntax error near '"+n+"'";
         const s=r.slice(i+1).trim(),o=s.lastIndexOf("}"),c=o>-1?s.slice(0,o).trim():s;
         return e.functions||(e.functions= {
@@ -2581,7 +2713,121 @@ s.register("cut",function(e) {
         }catch(e) {}
         return""
       };
+      const resolveCommandPath=function(t) {
+        try {
+          if(t.includes("/")) {
+            const p=a(t);
+            return webfs.fileExist(p)?p:""
+          }
+          const dirs=(e.env.PATH||"/bin").split(":");
+          for(let i=0;i<dirs.length;i++) {
+            const p=a(dirs[i]+"/"+t);
+            if(webfs.fileExist(p))return p
+          }
+        }catch(e) {}
+        return""
+      };
       const n=s.execute.bind(s);
+      /* ===== v2.3 可执行文件支持：/bin、/usr/bin 中的 JS / Shell 源码直接运行 ===== */
+      const __modCache={};
+      const __jsRequire=function(name) {
+        let base=name;
+        if(!/\.js$/.test(base))base+=".js";
+        const candidates=["/usr/lib/"+base,"/lib/"+base,"/usr/local/lib/"+base];
+        let found="";
+        for(let i=0;i<candidates.length;i++) {
+          try{if(webfs.fileExist(candidates[i])){found=candidates[i];break}}catch(x){}
+        }
+        if(!found)throw new Error("Cannot find module '"+name+"'");
+        if(__modCache[found])return __modCache[found].exports;
+        let s2="";
+        try{s2=(webfs.read(found)||"").replace(/^#![^\n]*/,"")}catch(x){}
+        const m={exports:{}};
+        __modCache[found]=m;
+        const fn=new Function("module","exports","require",s2);
+        fn(m,m.exports,__jsRequire);
+        return m.exports;
+      };
+      const isShellScript=function(filePath,src) {
+        const first=(src.split("\n")[0]||"").trim();
+        if(/^#!\s*\S*(sh|bash)\s*$/.test(first))return true;
+        if(/^#!\s*\/usr\/bin\/env\s+(ba)?sh\s*$/.test(first))return true;
+        if(/\.sh$/.test(filePath)&&!/^#!\s*\S*(js|node|javascript)/.test(first))return true;
+        return false;
+      };
+      const executeJsScript=function(cmdName,filePath,src,args) {
+        __ioOut="";__ioErr="";
+        try {
+          const code=src.replace(/^#![^\n]*/,"");
+          const module={exports:{}};
+          const exportsObj=module.exports;
+          const fn=new Function("wemlinux","system","stdlib","args","module","exports","require",code);
+          fn(window.wemlinux,window.wemlinux.system,window.wemlinux.stdlib,args,module,exportsObj,__jsRequire);
+          const m=module.exports;
+          const handler=(typeof m==="function")?m:(m&&typeof m.main==="function"?m.main:null);
+          if(typeof handler!=="function")return Promise.resolve(__ioOut+(__ioErr?"\n"+__ioErr:""));
+          const ctx={wemlinux:window.wemlinux,system:window.wemlinux.system,stdlib:window.wemlinux.stdlib,cmd:cmdName,file:filePath,args:args};
+          try {
+            const ret=handler(args,ctx);
+            return Promise.resolve(ret).then(function(out) {
+              let s="";
+              if(__ioOut)s+=__ioOut;
+              if(out!=null&&String(out)!=="") {
+                if(s&&!/\n$/.test(s))s+="\n";
+                s+=String(out);
+              }
+              if(__ioErr)s+=(s&&!/\n$/.test(s)?"\n":"")+__ioErr;
+              __ioOut="";__ioErr="";
+              return s;
+            });
+          }catch(err) {
+            __ioOut="";__ioErr="";
+            return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));
+          }
+        }catch(err) {
+          return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));
+        }
+      };
+      const executeShellScript=async function(cmdName,filePath,src,args) {
+        let body=src.replace(/^#![^\n]*\n?/,"");
+        // 参数替换：$1..$n / ${1}..${n}（含引号内的 $1，不做分词）
+        body=body.replace(/\$(\d+)/g,function(m,d){return args[+d-1]!==undefined?String(args[+d-1]):m});
+        body=body.replace(/\$\{(\d+)\}/g,function(m,d){return args[+d-1]!==undefined?String(args[+d-1]):m});
+        // 命令替换预处理：$(cmd) 在脚本内提前求值（b() 的引号占位符会遮蔽 $(...)）
+        const matchCmd=String(body).match(/\$\(([^)]*)\)/g);
+        if(matchCmd&&matchCmd.length) {
+          for(let i=0;i<matchCmd.length;i++) {
+            const cm=matchCmd[i];
+            try {
+              const val=await b(cm.slice(2,-1));
+              body=body.split(cm).join(val||"");
+            }catch(x) { body=body.split(cm).join(""); }
+          }
+        }
+        const saved={};
+        for(let i=0;i<args.length;i++) {
+          saved["$"+(i+1)]=e.vars["$"+(i+1)];
+          e.vars["$"+(i+1)]=args[i];
+        }
+        return Promise.resolve(x(body)).then(function(out) {
+          for(let i=0;i<args.length;i++) {
+            if(saved["$"+(i+1)]!==undefined)e.vars["$"+(i+1)]=saved["$"+(i+1)];
+            else delete e.vars["$"+(i+1)];
+          }
+          return out;
+        });
+      };
+      const executeCommandFile=function(cmdName,filePath,args) {
+        let src="";
+        try{src=webfs.read(filePath)||""}catch(err){}
+        if(!src.trim())return Promise.resolve("");
+        try {
+          if(isShellScript(filePath,src))return executeShellScript(cmdName,filePath,src,args);
+          return executeJsScript(cmdName,filePath,src,args);
+        }catch(err) {
+          return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));
+        }
+      };
       s.execute=function(t,r) {
         if(this.has(t)&&BUILTINS.includes(t))return n(t,r);
         if(e.functions&&e.functions[t]) {
@@ -2591,6 +2837,7 @@ s.register("cut",function(e) {
           t++)e.vars["$"+(t+1)]=r[t];
           return x(n)
         }
+        if(this.has(t))return n(t,r);
         const inner=resolveCommand(t);
         if(inner&&this.has(inner)) {
           try {
@@ -2599,7 +2846,10 @@ s.register("cut",function(e) {
           }catch(err) {
             return Promise.resolve("sh: "+t+": error: "+err.message)
           }
-        }return Promise.resolve("sh: "+t+": command not found")
+        }
+        const fpath=resolveCommandPath(t);
+        if(fpath)return executeCommandFile(t,fpath,r);
+        return Promise.resolve("sh: "+t+": command not found")
       };
       const installBuiltins=function() {
         try {
@@ -2627,5 +2877,209 @@ s.register("cut",function(e) {
         })()
       },0)
     })(),setTimeout(E,200)
-  }"loading"===document.readyState?document.addEventListener("DOMContentLoaded",O):O(),window.executeShellCommand=b,window.handleCommand=S,window._state=e,window.safeResolvePath=a
+  }"loading"===document.readyState?document.addEventListener("DOMContentLoaded",O):O(),window.executeShellCommand=S,window.handleCommand=S,window._state=e,window.safeResolvePath=a;
+      /* ================= wemlinux v2.3 全局对象 / system / stdlib ================= */
+      var __ioOut="",__ioErr="",__outHook=null,__errHook=null;
+      var __sys={
+        version:"2.3",
+        /* ---- I/O 流：外部命令的输出/输入通道 ---- */
+        stdin:{
+          read:function(){try{return webfs.read("/tmp/.pipe")||""}catch(e){return""}},
+          clear:function(){try{webfs.delFile("/tmp/.pipe")}catch(e){}}
+        },
+        stdout:{
+          write:function(t){__ioOut+=String(t==null?"":t);return this},
+          writeln:function(t){__ioOut+=String(t==null?"":t)+"\n";return this},
+          buffer:function(){return __ioOut},
+          reset:function(){__ioOut="";return this},
+          set:function(fn){__outHook=typeof fn==="function"?fn:null;return this}
+        },
+        stderr:{
+          write:function(t){__ioErr+=String(t==null?"":t);return this},
+          writeln:function(t){__ioErr+=String(t==null?"":t)+"\n";return this},
+          buffer:function(){return __ioErr},
+          reset:function(){__ioErr="";return this},
+          set:function(fn){__errHook=typeof fn==="function"?fn:null;return this}
+        },
+        /* ---- 输出合并：stdout + 返回值 + stderr，命令结束时调用 ---- */
+        flush:function(ret){
+          var s="";
+          if(__ioOut)s+=(__outHook?__outHook(__ioOut):__ioOut);
+          if(ret!=null&&String(ret)!=="")s+=(s?"\n":"")+String(ret);
+          if(__ioErr)s+=(s?"\n":"")+(__errHook?__errHook(__ioErr):__ioErr);
+          __ioOut="";__ioErr="";
+          return s;
+        },
+        /* ---- 环境变量 ---- */
+        setenv:function(name,value){
+          if(!name)return false;
+          e.env[name]=String(value==null?"":value);
+          if(!e.exported.includes(name))e.exported.push(name);
+          return true;
+        },
+        getenv:function(name){return e.env[name]!==undefined?e.env[name]:null},
+        env:function(){return Object.assign({},e.env)},
+        unsetenv:function(name){delete e.env[name];return true},
+        /* ---- 工作目录 ---- */
+        cwd:function(){return e.cwd},
+        chdir:function(p){
+          var np=a(p);
+          try{if(!webfs.isDir(np))return false}catch(x){return false}
+          e.oldpwd=e.cwd;e.cwd=np;e.env.OLDPWD=e.oldpwd;e.env.PWD=np;
+          return true;
+        },
+        /* ---- 参数解析：支持子命令 subcommand / flags / options ---- */
+        getargs:function(args,spec){
+          args=args||[];spec=spec||{};
+          var flags=spec.flags||[],opts=spec.options||[],subs=spec.subcommands||null;
+          var res={subcommand:null,positionals:[],flags:{},options:{},raw:args.slice()};
+          var i=0,first=true;
+          while(i<args.length){
+            var x=args[i];
+            if(x==="--"){res.positionals=res.positionals.concat(args.slice(i+1));break}
+            if(x.indexOf("--")===0&&x.length>2){
+              var k=x.slice(2),eq=k.indexOf("=");
+              if(eq>-1){res.options[k.slice(0,eq)]=k.slice(eq+1);i++;continue}
+              if(opts.indexOf(k)>-1){res.options[k]=args[i+1]!==undefined?args[i+1]:true;i+=2;continue}
+              if(subs===null&&args[i+1]!==undefined&&args[i+1].indexOf("-")!==0){res.options[k]=args[i+1];i+=2;continue}
+              res.flags[k]=true;i++;continue;
+            }
+            if(x.indexOf("-")===0&&x.length>1&&!/^-\d/.test(x)){
+              var consumed=false;
+              for(var j=1;j<x.length;j++){
+                var ch=x[j];
+                if(opts.indexOf(ch)>-1){res.options[ch]=args[i+1]!==undefined?args[i+1]:true;consumed=true;i+=2;break}
+                res.flags[ch]=true;
+              }
+              if(!consumed&&subs===null&&x.length===2&&args[i+1]!==undefined&&args[i+1].indexOf("-")!==0){
+                res.options[x.charAt(1)]=args[i+1];i+=2;continue;
+              }
+              if(!consumed)i++;
+              continue;
+            }
+            if(first){
+              if(subs){if(subs.indexOf(x)>-1)res.subcommand=x;else res.positionals.push(x)}
+              else res.subcommand=x;
+              first=false;
+            }else res.positionals.push(x);
+            i++;
+          }
+          return res;
+        },
+        /* ---- 异常捕获（同步 + 异步） ---- */
+        catch_excp:function(fn){
+          try{
+            var v=fn();
+            return v&&typeof v.then==="function"
+              ?v.then(function(r){return{ok:true,value:r}},function(err){return{ok:false,error:err,msg:err&&err.message||String(err)}})
+              :{ok:true,value:v};
+          }catch(err){
+            return{ok:false,error:err,msg:err&&err.message||String(err)};
+          }
+        },
+        /* ---- 软链接 ---- */
+        softlink:{
+          create:function(target,linkPath){try{return webfs.symlink(target,linkPath)}catch(e){return false}},
+          target:function(path){try{return webfs.readlink(path)||""}catch(e){return""}},
+          isLink:function(path){try{return webfs.isLink(path)}catch(e){return false}},
+          resolve:function(path){return webfs.read(path)||""}
+        },
+        /* ---- 进程/退出 ---- */
+        pid:function(){return e.pid},
+        exit:function(code){e.lastExitCode=code|0;return code|0},
+        exitCode:function(){return e.lastExitCode},
+        /* ---- 命令 ---- */
+        which:function(cmd){
+          try{
+            const dirs=(e.env.PATH||"/bin").split(":");
+            for(let i=0;i<dirs.length;i++){const p=a(dirs[i]+"/"+cmd);if(webfs.fileExist(p))return p}
+          }catch(x){}
+          return"";
+        },
+        exec:function(cmd){return b(cmd)},
+        register:function(name,handler){return s.register(name,handler),true},
+        sleep:function(ms){return new Promise(function(r){setTimeout(r,ms)})}
+      };
+      /* 标准库：专供外部命令开发，覆盖全链路 */
+      var __stdlib={
+        fs:{
+          read:function(p){try{return webfs.read(p)||""}catch(e){return null}},
+          write:function(p,c){try{return webfs.write(p,c)}catch(e){return false}},
+          append:function(p,c){try{var o=webfs.fileExist(p)?(webfs.read(p)||""):"";return webfs.write(p,o+c)}catch(e){return false}},
+          mkdir:function(p){try{return webfs.mkdir(p)}catch(e){return false}},
+          rm:function(p){try{return webfs.delFile(p)}catch(e){return false}},
+          ls:function(p){try{return webfs.getFileList(p)||[]}catch(e){return[]}},
+          exists:function(p){try{return webfs.fileExist(p)}catch(e){return false}},
+          isDir:function(p){try{return webfs.isDir(p)}catch(e){return false}},
+          isFile:function(p){try{return webfs.fileExist(p)&&!webfs.isDir(p)}catch(e){return false}},
+          stat:function(p){try{return webfs.stat(p)}catch(e){return null}},
+          chmod:function(p,m){try{return webfs.chmod(p,m)}catch(e){return false}},
+          size:function(p){try{return webfs.getFileSize(p)||0}catch(e){return 0}},
+          rename:function(a2,b2){try{return webfs.rename(a2,b2)}catch(e){return false}},
+          symlink:function(t,p){try{return webfs.symlink(t,p)}catch(e){return false}},
+          readlink:function(p){try{return webfs.readlink(p)}catch(e){return""}},
+          isLink:function(p){try{return webfs.isLink(p)}catch(e){return false}}
+        },
+        path:{
+          resolve:function(p){return a(p)},
+          join:function(){var parts=Array.prototype.slice.call(arguments);return a(parts.join("/"))},
+          basename:function(p){var s=String(p||"").replace(/\/+$/,"");return s?s.split("/").pop():"/"},
+          dirname:function(p){var s=String(p||"").replace(/\/+$/,"");if(!s)return"/";var i=s.lastIndexOf("/");return i<=0?"/":s.slice(0,i)},
+          extname:function(p){var b=String(p||"").split("/").pop()||"";var i=b.lastIndexOf(".");return i>0?b.slice(i):""},
+          normalize:function(p){return a(p)}
+        },
+        io:{
+          out:function(t){__ioOut+=String(t==null?"":t);return true},
+          err:function(t){__ioErr+=String(t==null?"":t);return true},
+          print:function(t){__ioOut+=String(t==null?"":t);return true},
+          println:function(t){__ioOut+=String(t==null?"":t)+"\n";return true},
+          readPipe:function(){try{return webfs.read("/tmp/.pipe")||""}catch(e){return""}},
+          flush:function(ret){return __sys.flush(ret)}
+        },
+        sys:{
+          env:function(){return __sys.env()},
+          setenv:function(n,v){return __sys.setenv(n,v)},
+          getenv:function(n){return __sys.getenv(n)},
+          unsetenv:function(n){return __sys.unsetenv(n)},
+          cwd:function(){return e.cwd},
+          chdir:function(p){return __sys.chdir(p)},
+          exit:function(c){return __sys.exit(c)},
+          exitCode:function(){return e.lastExitCode},
+          pid:function(){return e.pid},
+          which:function(c){return __sys.which(c)},
+          exec:function(c){return b(c)},
+          sleep:function(ms){return __sys.sleep(ms)}
+        },
+        proc:{
+          register:function(n,h){return s.register(n,h),true},
+          has:function(n){return s.has(n)},
+          get:function(n){return s.getHandler(n)},
+          list:function(){return s.registered.slice()},
+          execute:function(n,args){return s.execute(n,args||[])},
+          unregister:function(n){if(s.has(n)){delete s.handlers[n];var i=s.registered.indexOf(n);if(i>-1)s.registered.splice(i,1);return true}return false}
+        },
+        utils:{
+          esc:function(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")},
+          quote:function(s){return '"'+String(s).replace(/"/g,'\\"')+'"'},
+          isNum:function(s){return/^\d+$/.test(String(s))},
+          formatSize:function(n){if(!n||n<=0)return"0B";var t=Math.floor(Math.log(n)/Math.log(1024));return parseFloat((n/Math.pow(1024,t)).toFixed(2))+["B","KB","MB","GB"][t]},
+          pad:function(n,len){var s=String(n);while(s.length<(len||2))s="0"+s;return s},
+          now:function(){return Date.now()},
+          random:function(){return Math.random()}
+        }
+      };
+      window.wemlinux={
+        version:"2.3",
+        author:"evo",
+        name:"WemLinux",
+        webfs:window.webfs,
+        system:__sys,
+        stdlib:__stdlib,
+        shell:{
+          execute:function(cmd){return b(cmd)},
+          state:function(){return e},
+          commandRouter:s,
+          resolvePath:a
+        }
+      };
 }();
