@@ -1,392 +1,781 @@
-# WemLinux
+# WemLinux Tutorial
 
-> WemLinux is a lightweight Linux simulation environment running in the browser (HummingLinux), consisting of webfs (virtual file system) + wemlinux shell (a shell interpreter with 121 built-in commands), all integrated into a single JS file. Simply include it in your browser and start using it.
+WemLinux is a "mini Linux" that runs in your browser: it simulates a complete file system in memory (webfs), ships with a shell that supports pipes, redirection, variables, functions and control flow — all packed into **a single JS file**. This tutorial takes you from "running commands" to "writing your own commands, manipulating the file system, and using every API".
 
-· Author: Evo
-· Studio: LingHan Technology
+Current version: **wemlinux2 v2.3** (author: Evo, MIT License)
 
 ---
 
-## Quick Start
+## Table of Contents
+
+- [Step 1: Get WemLinux Running](#step-1-get-wemlinux-running)
+- [Understand the Architecture: How the Four Pieces Fit Together](#understand-the-architecture-how-the-four-pieces-fit-together)
+- [Basic API Tutorial (window.*)](#basic-api-tutorial-window)
+  - [webfs: The Virtual File System](#1-webfs-the-virtual-file-system)
+  - [executeShellCommand: Run Commands](#2-executeshellcommand-run-commands)
+  - [commandRouter & registerCommand: The Command System](#3-commandrouter--registercommand-the-command-system)
+  - [safeResolvePath & getFileModeString](#4-saferesolvepath--getfilemodestring)
+  - [_state: The Shell's Real Body](#5-state-the-shells-real-body)
+- [Standard Library Tutorial (window.wemlinux.stdlib)](#standard-library-tutorial-windowwemlinuxstdlib)
+  - [stdlib.fs: File Operations](#stdlibfs-file-operations)
+  - [stdlib.path: Path Handling](#stdlibpath-path-handling)
+  - [stdlib.io: Output to the Shell](#stdlibio-output-to-the-shell)
+  - [stdlib.sys: Environment & Process](#stdlibsys-environment--process)
+  - [stdlib.proc: Command Management](#stdlibproc-command-management)
+  - [stdlib.utils: Utilities](#stdlibutils-utilities)
+- [Hands-On: Write a Complete Custom Command](#hands-on-write-a-complete-custom-command)
+- [system Overview (__sys)](#system-overview-sys)
+- [Built-in Command Cheat Sheet](#built-in-command-cheat-sheet)
+- [Browser Requirements & License](#browser-requirements--license)
+
+---
+
+## Step 1: Get WemLinux Running
+
+Include the script in an HTML page and open the console:
 
 ```html
 <!DOCTYPE html>
 <html>
-<head>
-  <meta charset="utf-8">
-  <title>WemLinux</title>
-</head>
 <body>
-  <input id="shell-input" placeholder="Enter command, press Enter to execute">
-  <pre id="shell-output"></pre>
-  <script src="wemlinux.js"></script> // or wemlinux2.js
+  <script src="wemlinux2.min.js"></script>
   <script>
-    const input = document.getElementById('shell-input');
-    const output = document.getElementById('shell-output');
-
-    input.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter') return;
-      const result = await window.executeShellCommand(input.value);
-      output.textContent += '$ ' + input.value + '\n' + result + '\n';
-      input.value = '';
-    });
+    // Wait for the file system to initialize (the script loads IndexedDB data asynchronously)
+    setTimeout(async () => {
+      const out = await window.executeShellCommand('ls -la /etc');
+      console.log(out);
+    }, 300);
   </script>
 </body>
 </html>
 ```
 
-After importing wemlinux.js, the environment initializes automatically:
+You should see something like:
 
-· File system: standard directory tree including /bin /dev /etc /home /proc /system /tmp /usr /var, etc.
-· Pre-installed files: /etc/hostname (humminglinux), /etc/motd, /etc/passwd, /home/user/README.txt
-· Environment variables: PATH / HOME / TERMINAL / SHELL / USER / HOSTNAME
+```
+-rw-r--r-- root root 0 hostname
+drwxr-xr-x root root 0 init.d
+...
+```
+
+> Want results earlier? `window.webfs` is synchronous — no waiting needed:
+> ```js
+> console.log(window.webfs.read('/etc/hostname')); // "humminglinux"
+> ```
 
 ---
 
-### External API Documentation
+## Understand the Architecture: How the Four Pieces Fit Together
 
-WemLinux exposes the following APIs on window:
+WemLinux is built from four layers. Once you see how they cooperate, nothing else is confusing:
 
-**window.executeShellCommand(command)**
-
-Execute a shell command (supports pipes, redirections, variables, control flow).
-
-Parameter Type Description
-command string The command string to execute
-
-Returns Promise<string> — command output. Returns an empty string when output is redirected to a file.
-
-```js
-await window.executeShellCommand('ls -la /etc');
-// "-rw-r--r-- root root        0 hostname\ndrwxr-xr-x ..."
+```
+┌────────────────────────────────────────────────────────┐
+│ ① webfs — File System                                  │
+│    A tree in memory: /bin, /etc, /home/user...         │
+│    All file-reading/writing APIs live here             │
+├────────────────────────────────────────────────────────┤
+│ ② shell — Command Interpreter                          │
+│    Splits "ls -la /etc" into command + args, then      │
+│    looks up the handler in ③                           │
+│    Handles pipes | redirection > variables $x control  │
+├────────────────────────────────────────────────────────┤
+│ ③ commandRouter — Command Registry                     │
+│    A table: command name → handler function.           │
+│    All 113 built-in commands are registered here.      │
+│    You can add your own too (registerCommand).         │
+├────────────────────────────────────────────────────────┤
+│ ④ system / stdlib — Public Interfaces                  │
+│    The toolbox for writing commands: system is aimed   │
+│    at the host environment, stdlib at command          │
+│    developers (the focus of this tutorial).            │
+└────────────────────────────────────────────────────────┘
 ```
 
-**window.handleCommand(command)**
+**One-liner to remember**: the shell "talks", the commandRouter "finds someone to do the job", webfs "stores things", and stdlib is "your toolbox".
 
-Alias for executeShellCommand, identical in behavior.
+Now let's start from the bottom — webfs — and work our way up.
 
-**window.commandRouter**
+---
 
-Command router object containing all registered commands:
+## Basic API Tutorial (window.*)
 
-Method Description
-commandRouter.register(name, handler) Register a command
-commandRouter.getHandler(name) Retrieve a command handler
-commandRouter.has(name) Check if a command exists
-commandRouter.execute(name, args) Execute a command directly (skips parsing)
-commandRouter.registered Array of registered command names
+### 1. webfs: The Virtual File System
 
-**window.registerCommand(name, handler)**
+**What it is**: a file tree living in memory, rooted at `/`, pre-populated with `/bin`, `/etc`, `/home/user`, `/tmp` and more. Every `ls` or `cat` command operates on this tree.
 
-External command injection API — allows adding new commands without modifying the source code.
-
-Parameter Type Description
-name string Command name (letters/digits/underscores)
-handler Function (args: string[]) => string \| Promise<string>
-
-Returns boolean — whether registration succeeded.
+**Read & write** (the two you'll use most):
 
 ```js
-window.registerCommand('hello', (args) => 'Hello, ' + (args.join(' ') || 'world') + '!');
+// Write: parent directories are auto-created if missing
+window.webfs.write('/tmp/note.txt', 'Hello WemLinux');
 
-await window.executeShellCommand('hello Evo'); // "Hello, Evo!"
+// Read
+const text = window.webfs.read('/tmp/note.txt');
+console.log(text); // "Hello WemLinux"
 ```
 
-Existing commands can be overridden (the later registration takes effect).
-
-**window.safeResolvePath(path)**
-
-Resolves a path, supporting ~, -, ., .. syntax, returning an absolute path.
+**Check existence / type**:
 
 ```js
-window.safeResolvePath('~/documents/file.txt'); // "/home/user/documents/file.txt"
+window.webfs.fileExist('/tmp/note.txt'); // true
+window.webfs.fileExist('/tmp/nope.txt'); // false
+window.webfs.isDir('/etc');              // true
+window.webfs.isDir('/tmp/note.txt');     // false
 ```
 
-window.getFileModeString(path)
+**List a directory**:
 
-Gets the file permission string (used by ls -l, etc.).
+```js
+window.webfs.getFileList('/etc');
+// [{name:"hostname", type:"file", size:13}, {name:"passwd", type:"file", ...}, ...]
+```
+
+**Directory operations**:
+
+```js
+window.webfs.mkdir('/home/user/projects');                       // create dir
+window.webfs.rename('/tmp/note.txt', '/home/user/projects/note.md'); // move/rename
+window.webfs.delFile('/home/user/projects/note.md');             // delete file
+```
+
+**Metadata & permissions**:
+
+```js
+const st = window.webfs.stat('/etc/hostname');
+// {mode:"0644", owner:"root", group:"root", size:13, mtime:..., type:"file"}
+
+window.webfs.chmod('/etc/hostname', '0755');   // make it executable
+// Note: mode is a 4-char string; the first char is ignored, the last 3 take effect
+```
+
+**Symlinks** (like `ln -s` on Linux):
+
+```js
+window.webfs.symlink('/etc/hostname', '/tmp/hn');  // /tmp/hn → /etc/hostname
+window.webfs.read('/tmp/hn');       // auto-resolves → "humminglinux"
+window.webfs.isLink('/tmp/hn');     // true
+window.webfs.readlink('/tmp/hn');   // "/etc/hostname"
+```
+
+**Persistence** (a wemlinux2 feature):
+
+```js
+await window.webfs.save();   // persist the whole tree to IndexedDB
+await window.webfs.load();   // restore it next time the page opens
+```
+
+**Path normalization**:
+
+```js
+window.webfs.normalizePath('/a/./b/../c'); // "/a/c"
+```
+
+> **When to use webfs**: whenever you read/write files or inspect file attributes. It's synchronous (faster than executeShellCommand) and perfect inside custom commands.
+
+---
+
+### 2. executeShellCommand: Run Commands
+
+**What it is**: the shell's front door. Give it a command string, it returns a Promise whose resolved value is the command output.
+
+```js
+const out = await window.executeShellCommand('ls /etc');
+console.log(out);
+// "hostname\ninit.d\npasswd\n..."
+```
+
+**Everything inside commands is supported**: pipes, redirection, variables, control flow, multi-line scripts:
+
+```js
+await window.executeShellCommand('echo hi | tr a-z A-Z'); // "HI"
+
+await window.executeShellCommand('echo "name=$(whoami)"'); // "name=root"
+
+await window.executeShellCommand(`
+for i in 1 2 3; do
+  echo "item $i"
+done
+`);
+// "item 1\nitem 2\nitem 3"
+```
+
+**Return value rules** (important):
+- With output → returns the output string
+- Redirected to a file (`echo hi > f`) → returns an **empty string** (output went to the file)
+- Unknown command → returns `sh: xxx: command not found`
+
+**Multi-line vs single-line**: `executeShellCommand` automatically chunks multi-line scripts for you. If you only need one line, `window.wemlinux.shell.execute(cmd)` is a faster single-line executor — but don't run a whole `for`/`while` block through it.
+
+```js
+await window.wemlinux.shell.execute('echo single');  // "single"
+```
+
+> **When to use executeShellCommand**: when you want to "act like a user" — running commands, integration tests, or using WemLinux as a scripting engine.
+
+---
+
+### 3. commandRouter & registerCommand: The Command System
+
+**What it is**: the command registry. Every time the shell runs a command, it looks here for "a handler named X".
+
+**What it offers**:
+
+```js
+const r = window.commandRouter;
+r.has('ls');                 // true — does the command exist?
+r.registered;                // ["alias","awk","bash",...] all registered names
+r.getHandler('echo');        // the handler function for echo
+```
+
+**execute: call a command directly, skipping parsing** (pass args as an array yourself):
+
+```js
+await window.commandRouter.execute('echo', ['Hello', 'World']);
+// "Hello World"
+```
+
+**registerCommand: register your own command** (the core play):
+
+```js
+window.registerCommand('hi', (args) => {
+  return 'Hello, ' + (args.join(' ') || 'stranger') + '!';
+});
+```
+
+Instantly usable from the shell:
+
+```js
+await window.executeShellCommand('hi Evo'); // "Hello, Evo!"
+await window.executeShellCommand('hi');     // "Hello, stranger!"
+```
+
+**Rules to remember**:
+- The handler receives `args`: a **string array**, already processed (quotes stripped, variables expanded)
+- Returning a string = command output; returning `""` = no output
+- Handlers may be `async` (returning a Promise works too)
+- **Same-name override**: the later registration wins — you can even "mod" built-ins:
+
+```js
+window.registerCommand('ls', (args) => 'Not telling you'); // overrides built-in ls
+await window.executeShellCommand('ls /');                  // "Not telling you"
+```
+
+> **When to use**: adding features, simulating external programs, or writing plugins. This is the most recommended way to register commands.
+
+---
+
+### 4. safeResolvePath & getFileModeString
+
+**safeResolvePath**: turns a user-relative path into an absolute one, handling `~`, `.`, `..`, `-`:
+
+```js
+window.safeResolvePath('~/doc.txt');            // "/home/user/doc.txt"
+window.safeResolvePath('../etc/hostname');      // "/etc/hostname" (if cwd is /home/user)
+window.safeResolvePath('-');                    // the previous directory (cd - semantics)
+```
+
+**getFileModeString**: converts the numeric mode from `stat` into an `ls -l`-style permission string:
 
 ```js
 window.getFileModeString('/etc/hostname'); // "-rw-r--r--"
 window.getFileModeString('/etc');          // "drwxr-xr-x"
+// First char: - file / d directory; next 9 chars: r read, w write, x execute
 ```
 
-**window.webfs**
+---
 
-webfs virtual file system object (pure in-memory tree structure, zero dependencies):
+### 5. _state: The Shell's Real Body
 
-Method Description
-webfs.read(path) Read file content (symlinks automatically resolved)
-webfs.write(path, content) Write to a file
-webfs.delFile(path) Delete a file
-webfs.fileExist(path) Check if a file exists
-webfs.isDir(path) Check if path is a directory
-webfs.getFileList(path) List directory entries [{name, type, size}]
-webfs.getFileSize(path) Get file size
-webfs.mkdir(path) Create directory (supports -p recursive)
-webfs.rename(old, new) Rename/move
-webfs.stat(path) Get file metadata {type, mode, size}
-webfs.chmod(path, mode) Change permissions
-webfs.exists(path) Check if path exists
-webfs.normalizePath(path) Normalize path
-webfs.exit() Clean up environment
-
-window._state
-
-### Global state object:
+**What it is**: a live feed of all internal shell state. When you `export`, `cd`, or assign variables in commands, you're mutating this object. You can read **and write** it directly — same effect as typing commands.
 
 ```js
-{
-  cwd: "/",          // Current working directory
-  pid: "12345",      // Process ID
-  env: {...},        // Environment variables
-  vars: {...},       // User variables
-  aliases: {...},    // Aliases
-  history: [...],    // Command history
-  lastOutput: "",    // Last output
-  lastExitCode: 0,   // Last exit code
-  oldpwd: "/",       // Previous directory (cd -)
-  dirStack: [],      // Directory stack (pushd/popd)
-  functions: {},     // Shell functions
-  jobs: [],          // Background jobs
-  ulimit: {...}      // Resource limits
+window._state.cwd;               // current directory, e.g. "/"
+window._state.env;               // environment variables object
+window._state.vars;              // user variables (incl. $1 positional params)
+window._state.aliases;           // alias table
+window._state.functions;         // function table
+window._state.history;           // command history array
+window._state.lastExitCode;      // exit code of the last command
+window._state.oldpwd;            // previous directory
+window._state.dirStack;          // pushd/popd directory stack
+window._state.jobs;              // background jobs
+```
+
+**Read/write examples**:
+
+```js
+// Way 1: change via shell command
+await window.executeShellCommand('export FOO=bar');
+window._state.env.FOO; // "bar"
+
+// Way 2: mutate the object directly (equivalent!)
+window._state.vars.MYFLAG = 'yes';
+await window.executeShellCommand('echo $MYFLAG'); // "yes"
+
+// You can even change cwd directly
+window._state.cwd = '/etc';
+await window.executeShellCommand('pwd'); // "/etc"
+```
+
+**Another piece of state**: `window._sudoMode` (boolean). It becomes `true` after `su`/`sudo` verifies the password; sensitive commands like `rm` require it.
+
+> **When to use _state**: debugging shell state, injecting/reading variables from outside, state synchronization. Note: mutating `_state.env` directly does NOT update the `exported` list automatically — use the `export` command or `window.wemlinux.system.setenv` if you need `export -p` to see it.
+
+---
+
+## Standard Library Tutorial (window.wemlinux.stdlib)
+
+**What it is**: a toolbox made **for command developers**, with six modules: `fs`, `path`, `io`, `sys`, `proc`, `utils`. The difference from `system`: `system` is the low-level interface for the **host environment** (pages, bot frameworks); `stdlib` is the high-level wrapper **for you writing commands** — shorter and harder to get wrong.
+
+Meet all six modules in one glance:
+
+| Module | One-liner | Typical use |
+|--------|-----------|-------------|
+| `fs` | File read/write/delete/inspect | Command needs to persist/load data |
+| `path` | Path join & parse | Joining paths, extracting filenames |
+| `io` | Output to the command result | Command prints multiple lines |
+| `sys` | Env vars / cwd / process | Read env, see current dir |
+| `proc` | Register / invoke commands | Register commands, call other commands |
+| `utils` | String/number helpers | Escaping, formatting, zero-padding |
+
+Grab them (short names are handy):
+
+```js
+const { fs, path, io, sys, proc, utils } = window.wemlinux.stdlib;
+```
+
+---
+
+### stdlib.fs: File Operations
+
+**Concept**: `fs` is a "safe wrapper" around webfs — every method is try/caught, returning `null`/`false` on failure instead of throwing. You don't need try/catch in your commands.
+
+**Read & write** (the core):
+
+```js
+fs.write('/tmp/log.txt', 'First line');     // true — write
+fs.read('/tmp/log.txt');                    // "First line" — read
+fs.append('/tmp/log.txt', '\nSecond line'); // true — append (no overwrite)
+fs.read('/tmp/log.txt');
+// "First line\nSecond line"
+
+fs.read('/nonexistent/file');               // null (NOT an exception!)
+```
+
+**Existence & type checks**:
+
+```js
+fs.exists('/tmp/log.txt');   // true
+fs.isDir('/tmp');            // true
+fs.isFile('/tmp/log.txt');   // true
+fs.isFile('/tmp');           // false
+```
+
+**List a directory**:
+
+```js
+fs.ls('/etc');
+// [{name:"hostname", type:"file", size:13}, ...]
+```
+
+**Create, delete, rename**:
+
+```js
+fs.mkdir('/home/user/data');                        // true
+fs.rename('/tmp/log.txt', '/home/user/data/a.txt'); // true — move + rename in one step
+fs.rm('/home/user/data/a.txt');                     // true — delete file
+// Note: fs.rm only deletes files. For directories use webfs or the rm -r command.
+```
+
+**Metadata & permissions**:
+
+```js
+fs.stat('/etc/hostname');
+// {mode:"0644", owner:"root", group:"root", size:13, mtime:..., type:"file"}
+
+fs.chmod('/etc/hostname', '0755');  // true
+fs.size('/etc/hostname');           // 13 (bytes)
+```
+
+**The symlink trio**:
+
+```js
+fs.symlink('/etc/hostname', '/tmp/hn');  // create
+fs.isLink('/tmp/hn');                    // true
+fs.readlink('/tmp/hn');                  // "/etc/hostname"
+```
+
+**Full example — data layer for a "ledger" command**:
+
+```js
+function addRecord(amount, note) {
+  const file = '/home/user/records.txt';
+  const line = `${new Date().toISOString()} ${amount} ${note}`;
+  if (fs.exists(file)) fs.append(file, '\n' + line);
+  else fs.write(file, line);
+}
+addRecord(10, 'bubble tea');
+console.log(fs.read('/home/user/records.txt'));
+// "2026-08-26T... 10 bubble tea"
+```
+
+---
+
+### stdlib.path: Path Handling
+
+**Concept**: the file system only accepts absolute paths (`/a/b/c`), but user input is often `~/x` or `../y`. `path` converts and joins for you — a must when writing commands.
+
+**resolve — any path → absolute**:
+
+```js
+path.resolve('~/doc.txt');        // "/home/user/doc.txt"
+path.resolve('../etc/hostname');  // resolved against the current directory
+```
+
+**join — concatenate paths** (handles slashes automatically):
+
+```js
+path.join('/etc', 'init.d');      // "/etc/init.d"
+path.join('/etc/', '/init.d');    // "/etc/init.d" (extra slashes cleaned)
+```
+
+**Break a path apart**:
+
+```js
+const p = '/usr/local/bin/run.sh';
+path.basename(p);   // "run.sh"           — last segment
+path.dirname(p);    // "/usr/local/bin"   — containing directory
+path.extname(p);    // ".sh"              — extension (with dot)
+```
+
+**Full example — "check the extension"**:
+
+```js
+function isMarkdown(file) {
+  return path.extname(file) === '.md';
+}
+isMarkdown('README.md');        // true
+isMarkdown('wemlinux2.min.js'); // false
+```
+
+> Remember: **always use path to build paths, never hand-rolled string concatenation** — a naive `'/home/' + name` breaks or becomes a security issue the moment `name` contains `..`. `resolve`/`join` normalize for you.
+
+---
+
+### stdlib.io: Output to the Shell
+
+**Concept**: a command's handler returns one string = its output. But real commands often need many lines, mixed with error output. `io` gives you a **buffer mechanism**: write into the buffer first, then merge everything with `flush()` at the end.
+
+**The core trio: println / err / flush**:
+
+```js
+async function statusCommand(args) {
+  const io = window.wemlinux.stdlib.io;
+
+  io.println('Checking system...');   // normal output (auto newline)
+  io.out('CPU: 80%');                 // output without newline
+  io.err('WARNING: low memory!');     // error output (stderr channel)
+
+  return io.flush('Final line');      // merge everything and return
 }
 ```
 
-**window._sudoMode**
+Calling `statusCommand()` produces:
 
-Boolean value indicating whether in sudo mode (default false).
+```
+Checking system...
+CPU: 80%
+WARNING: low memory!
+Final line
+```
+
+**flush merge order** (memorize this): `stdout buffer → return value → stderr buffer`, newlines inserted automatically.
+
+**io vs plain return**:
+
+```js
+// Way A: plain return — simple, but one blob of text
+return 'Result: ' + data;
+
+// Way B: io + flush — for multi-line output with mixed errors
+io.println('Line 1');
+io.println('Line 2');
+return io.flush();
+```
+
+**Full example — a progress bar command**:
+
+```js
+async function download(args) {
+  const io = window.wemlinux.stdlib.io;
+  const utils = window.wemlinux.stdlib.utils;
+
+  for (let i = 0; i <= 10; i++) {
+    io.out('\rDownloading ' + (i * 10) + '%');
+    await new Promise(r => setTimeout(r, 50));
+  }
+  io.println('\nDone! Size: ' + utils.formatSize(1234567));
+  return io.flush();
+}
+```
 
 ---
 
-__Adding Commands__
+### stdlib.sys: Environment & Process
 
-Method 1: External Injection (Recommended, no source modification)
+**Concept**: when a command needs to know "which directory am I in? what's in PATH? who am I?", use `sys`. It's a thin wrapper over `system`.
+
+**Environment variables**:
 
 ```js
-window.registerCommand('greet', (args) => {
-  const name = args[0] || 'world';
-  return `Hi ${name}, welcome to WemLinux!`;
+sys.getenv('HOME');              // "/home"
+sys.setenv('MY_CFG', '123');     // true — shell can now use $MY_CFG
+sys.unsetenv('MY_CFG');          // true
+sys.env();                       // a copy of all env vars {PATH:"/usr/bin:...", ...}
+```
+
+**Current directory & process**:
+
+```js
+sys.cwd();                       // current working dir, e.g. "/home/user"
+sys.pid();                       // process ID
+sys.exit(3);                     // set exit code
+sys.exitCode();                  // 3
+```
+
+**Run other commands / find a command / delay**:
+
+```js
+await sys.exec('echo hello');    // run another command from inside (returns output string)
+sys.which('ls');                 // "/bin/ls" — locate a command via PATH
+await sys.sleep(1000);           // wait 1 second
+```
+
+**Full example — config from env with a default**:
+
+```js
+async function deploy(args) {
+  const sys = window.wemlinux.stdlib.sys;
+  const mode = sys.getenv('DEPLOY_MODE') || 'dev';   // fallback if unset
+  return 'Deploy mode: ' + mode;
+}
+sys.setenv('DEPLOY_MODE', 'prod');
+await deploy();   // "Deploy mode: prod"
+```
+
+---
+
+### stdlib.proc: Command Management
+
+**Concept**: `proc` lets you **manage the command registry at runtime** — register, query, invoke, unregister. It's the full version of `registerCommand`.
+
+**Register & invoke**:
+
+```js
+const proc = window.wemlinux.stdlib.proc;
+
+proc.register('greet', (args) => 'Hi, ' + (args[0] || 'nobody') + '!');
+proc.has('greet');                     // true
+proc.list();                           // ["alias","awk",...,"greet"]
+proc.get('greet');                     // the function object
+await proc.execute('greet', ['Evo']);  // "Hi, Evo!" (direct call, no shell parsing)
+```
+
+**Unregister**:
+
+```js
+proc.unregister('greet');   // true — after this the shell can't find it
+proc.has('greet');          // false
+```
+
+**Full example — a one-shot command, deleted after use**:
+
+```js
+const name = 'tmp_' + Date.now();
+proc.register(name, () => 'one-shot command ran');
+await proc.execute(name, []);   // "one-shot command ran"
+proc.unregister(name);          // cleanup
+```
+
+> `proc.register` and `window.registerCommand` do the same thing — pick either. The difference: proc lives inside the standard library, so command code doesn't have to jump out to the global scope.
+
+---
+
+### stdlib.utils: Utilities
+
+**Concept**: small high-frequency helpers for writing commands. Grab-and-go.
+
+```js
+const utils = window.wemlinux.stdlib.utils;
+
+utils.isNum('123');              // true — pure digits?
+utils.isNum('12a');              // false
+
+utils.formatSize(1536);          // "1.50KB" — bytes → human readable
+utils.formatSize(0);             // "0B"
+
+utils.pad(7, 2);                 // "07" — zero-pad
+utils.pad('abc', 5);             // "00abc"
+
+utils.esc('<b>&');               // "&lt;b&gt;&amp;" — HTML escape (injection guard)
+utils.quote('say "hi"');         // "\"say \\\"hi\\\"\"" — wrap in quotes
+
+utils.now();                     // timestamp in ms
+utils.random();                  // random 0~1
+```
+
+**Full example — formatted table output**:
+
+```js
+function printTable(rows) {
+  const io = window.wemlinux.stdlib.io;
+  const utils = window.wemlinux.stdlib.utils;
+
+  rows.forEach(r => {
+    io.println(
+      utils.pad(r.id, 3) + '  ' +
+      utils.pad(r.name, 10) + '  ' +
+      utils.formatSize(r.size)
+    );
+  });
+  return io.flush();
+}
+printTable([
+  {id: 1, name: 'readme.md', size: 2048},
+  {id: 2, name: 'main.js',   size: 55310}
+]);
+// "001  readme.md   2.00KB\n002  main.js     54.01KB"
+```
+
+---
+
+## Hands-On: Write a Complete Custom Command
+
+Let's tie it all together: register a `todo` command that supports add / list / done, persisting data with `fs`, building paths with `path`, printing with `io`, and registering with `proc`.
+
+```js
+const { fs, path, io, proc } = window.wemlinux.stdlib;
+const FILE = path.join('/home/user', 'todo.txt');   // data file
+
+proc.register('todo', async (args) => {
+  const sub = args[0] || 'list';
+
+  if (sub === 'add') {
+    // Add an item: append a "[ ] text" line
+    const text = args.slice(1).join(' ');
+    if (!text) { io.err('Usage: todo add <text>'); return io.flush(); }
+    const old = fs.exists(FILE) ? fs.read(FILE) : '';
+    fs.write(FILE, old + '[ ] ' + text + '\n');
+    io.println('Added: ' + text);
+
+  } else if (sub === 'list') {
+    // List all items with numbers
+    if (!fs.exists(FILE)) { io.println('(nothing yet — try: todo add bubble tea)'); }
+    else {
+      fs.read(FILE).split('\n').filter(Boolean).forEach((line, i) => {
+        io.println((i + 1) + '. ' + line);
+      });
+    }
+
+  } else if (sub === 'done') {
+    // Mark item #n as done: [ ] → [x]
+    const n = parseInt(args[1], 10);
+    const lines = fs.read(FILE).split('\n').filter(Boolean);
+    if (!n || n < 1 || n > lines.length) { io.err('No item #' + args[1]); return io.flush(); }
+    lines[n - 1] = lines[n - 1].replace('[ ]', '[x]');
+    fs.write(FILE, lines.join('\n') + '\n');
+    io.println('Done: ' + lines[n - 1]);
+  }
+
+  return io.flush();
 });
+```
 
-// Supports async
-window.registerCommand('fetch', async (args) => {
-  // Can fetch network data here
-  return 'data fetched';
+Now try it from the shell (via `executeShellCommand` or the in-page terminal):
+
+```bash
+todo add finish WemLinux tutorial
+todo add write a custom command
+todo list
+# 1. [ ] finish WemLinux tutorial
+# 2. [ ] write a custom command
+todo done 1
+todo list
+# 1. [x] finish WemLinux tutorial
+# 2. [ ] write a custom command
+```
+
+**Every API in this example maps to its role**:
+- `path.join` — builds the data file path safely
+- `fs.exists / fs.read / fs.write` — read/modify/write todo data
+- `io.println / io.err / io.flush` — output results, errors via stderr
+- `proc.register` — hangs the command into the registry, immediately usable in the shell
+
+---
+
+## system Overview (__sys)
+
+`window.wemlinux.system` (a.k.a. `__sys`) is the lower-level interface, mainly for the **host environment** (page scripts, bot frameworks). Prefer stdlib inside custom commands; keep this for reference:
+
+| Category | API | Description |
+|----------|-----|-------------|
+| Input | `system.stdin.read()` / `clear()` | Read/clear pipe input (`/tmp/.pipe`) |
+| Output | `system.stdout.write/writeln/buffer/reset/set(fn)` | stdout buffer & hook |
+| Error | `system.stderr.write/writeln/buffer/reset/set(fn)` | stderr buffer & hook |
+| Merge | `system.flush(ret)` | stdout + return + stderr merged |
+| Env | `system.setenv/getenv/env/unsetenv` | env vars (setenv also updates `exported`) |
+| Cwd | `system.cwd()` / `system.chdir(p)` | current dir / switch |
+| Args | `system.getargs(args, spec)` | parse subcommands/flags/options (example below) |
+| Exceptions | `system.catch_excp(fn)` | sync+async unified capture → `{ok, value}` |
+| Symlink | `system.softlink.create/target/isLink/resolve` | full symlink support |
+| Process | `system.pid()` / `system.exit(c)` / `system.exitCode()` | process & exit codes |
+| Commands | `system.which(cmd)` / `system.exec(cmd)` / `system.register(name, fn)` | locate/execute/register |
+| Delay | `system.sleep(ms)` | Promise-based sleep |
+
+**getargs example** (great for commands with complex arguments):
+
+```js
+const sys = window.wemlinux.system;
+const r = sys.getargs(['serve', '--port', '8080', '-v', 'file.txt'], {
+  flags: ['v'],                       // short flags, no value
+  options: ['port'],                  // long options, take a value
+  subcommands: ['serve', 'build']     // subcommands
 });
-```
-
-Method 2: Register within the source
-
-Add near s.register("exit", ...) in wemlinux.js:
-
-```js
-s.register("greet", function(e) {
-  return "Hi " + (e.join(" ") || "world") + ", welcome to WemLinux!";
-});
-```
-
-Method 3: Via commandRouter (runtime dynamic registration)
-
-```js
-window.commandRouter.register('greet', (args) => 'Hi ' + args.join(' '));
+// r.subcommand === "serve"
+// r.options.port === "8080"
+// r.flags.v === true
+// r.positionals === ["file.txt"]
 ```
 
 ---
 
-### Command Writing Standards
+## Built-in Command Cheat Sheet
 
-Handler Signature
+113 built-in commands, categorized:
 
-```js
-/**
- * @param {string[]} args - Command arguments (excluding the command name itself)
- * @returns {string|Promise<string>} Output text
- */
-function handler(args) { ... }
-```
+**Files & directories**: `ls` `cd` `pwd` `mkdir` `rm` `cp` `mv` `touch` `cat` `head` `tail` `chmod` `chown` `dir` `dirs` `pushd` `popd` `mount` `umount` `dd` `df`
 
-Return Value Conventions
+**Text processing**: `echo` `printf` `sed` `awk` `grep` `sort` `uniq` `wc` `cut` `base64` `ed`
 
-Return Value Meaning
-string (non-empty) Normal output, displayed directly
-"" (empty) Success but no output (e.g., rm)
-"sh: xxx: No such file or directory" Error message, lastExitCode set to 1
-"__CLEAR__" Clear the terminal
-"__BREAK__" / "__CONTINUE__" / "__RETURN__" Control flow signals
+**Shell built-ins**: `alias` `unalias` `export` `unset` `env` `set` `declare` `typeset` `readonly` `local` `printenv` `umask` `shift` `source` `.` `exec` `eval` `type` `command` `hash` `history` `help` `clear` `reset` `exit` `logout` `read` `let` `expr` `test` `[`
 
-Argument Parsing Conventions
+**Control flow**: `if` `then` `else` `fi` `for` `while` `do` `done` `case` `esac` `break` `continue` `return` `function`
 
-· Arguments are split by whitespace (quotes are not processed); quotes must be stripped within the command itself (refer to find -name "*.txt" for quote handling).
-· Path arguments should be resolved using window.safeResolvePath or the internal a(path) function.
-· Optional flags use -x format; unknown options should return an error:
-  ```js
-  if (args[0].startsWith('-')) return "greet: invalid option '" + args[0] + "'";
-  ```
+**Process & system**: `ps` `top` `kill` `killall` `jobs` `bg` `fg` `nice` `sleep` `time` `times` `uptime` `free` `dmesg` `uname` `hostname` `last` `w` `who` `whoami` `id`
 
-File System Access
+**Network (simulated)**: `ping` `curl` `wget` `ifconfig` `netstat` `nslookup`
 
-Unified access through the webfs object (internal webfs / global window.webfs are equivalent):
+**Security**: `sudo` `su` `passwd`
 
-```js
-if (!webfs.fileExist(path)) return "cmd: " + path + ": No such file or directory";
-if (webfs.isDir(path))      return "cmd: " + path + ": Is a directory";
-const content = webfs.read(path) || "";
-```
+**Other**: `bash` `sh` `linux64` `date` `sha256sum` `yes`
+
+Type `help` in the shell for the full list, `help <command>` for a single command's usage.
 
 ---
 
-### WemLinux Usage Tutorial
+## Browser Requirements & License
 
-Basic Commands
-
-```
-pwd                          # Current directory
-ls / ls -la /etc             # List directory (-a includes hidden, -l detailed info)
-cd /etc && pwd               # Change directory
-cat /etc/hostname            # View file
-echo "hello world"           # Output text
-clear                        # Clear screen
-history                      # View command history
-whoami / id / uname -a       # User / system information
-```
-
-File Operations
-
-```
-mkdir -p /home/user/blog     # Create directory recursively
-touch /tmp/a.txt             # Create empty file
-cp a.txt b.txt               # Copy
-mv a.txt renamed.txt         # Move/rename
-rm file / rm -rf dir         # Delete
-ln -s /etc/hostname /tmp/l   # Symbolic link (cat resolves automatically)
-find /home -name "*.txt"     # Search by name (supports * and ? wildcards)
-tree /etc                    # Directory tree
-du -s /etc                   # Directory usage
-stat /etc/hostname           # File details
-chmod 755 script.sh          # Change permissions
-```
-
-Text Processing
-
-```
-sort file.txt                # Sort (-n numeric -r reverse -u unique -f ignore case)
-grep keyword file.txt        # Search
-head -3 file.txt             # First lines
-tail -2 file.txt             # Last lines
-wc -l / -w / -c file.txt     # Line/word/byte count
-sed 's/a/b/' file.txt        # Replace
-awk '{print $1}' file.txt    # Column extraction
-uniq file.txt                # Deduplicate
-cut -d: -f1 /etc/passwd      # Cut by delimiter
-```
-
-Redirection and Pipes
-
-```
-echo "hello" > file.txt      # Overwrite
-echo "again" >> file.txt     # Append
-cat /etc/passwd | grep user  # Pipe
-ls / && echo "OK"            # Execute only on success
-cat x || echo "Failed"       # Execute only on failure
-```
-
-Processes and System
-
-```
-ps / top                     # Process list
-kill <pid>                   # Kill process
-free                         # Memory
-df / mount / umount          # Disk/mount
-uptime                       # Uptime
-date                         # Date/time
-sleep 2                      # Delay
-```
-
-Networking (simulated)
-
-```
-ping baidu.com               # Ping
-curl http://example.com      # Request (simulated)
-wget http://example.com/a    # Download (simulated)
-netstat / ifconfig           # Network status
-hostname                     # Hostname
-```
-
-Environment Variables
-
-```
-echo $HOME                   # View variable
-export MY_VAR=hello          # Export
-unset MY_VAR                 # Delete
-set / env                    # List all
-readonly RO=1                # Read-only variable (cannot be modified)
-```
-
-Shell Programming
-
-```
-# if / else
-if test -f /etc/hostname; then echo "Exists"; else echo "Does not exist"; fi
-
-# for loop
-for i in 1 2 3; do echo "Iteration $i"; done
-
-# while loop
-while test $x -lt 3; do echo $x; x=$((x+1)); done
-
-# Functions
-function greet() { echo "Hello $1"; }
-greet Evo
-
-# Aliases
-alias ll="ls -la"
-ll /etc
-```
-
-Help System
-
-```
-help                # List all commands
-help ls             # View usage for a specific command
-```
-
-### wemlinux2
-
-wemlinux2 and wemlinux differ significantly, hence two separate version files are released to accommodate different needs:
-
-1: All data stored directly in memory; data is cleared on page refresh
-2: Uses IndexedDB to persist the webfs object; data persists but may pose security risks
-
-1: All commands stored in the global object
-2: All pre-installed system commands stored in /bin, can be invoked via absolute paths
-
-1: System password: 10086
-2: No default password; can be changed via passwd
-
-1: No configuration files
-2: ~/.bashrc and ~/.profile configuration files
-
-1: PATH environment variable has no effect
-2: PATH environment variable supports loading commands and native functionality
-
-1: Supports command extensions
-2: Also supports extensions, but the upcoming WPK extension package manager will only support wemlinux 2
-
-External APIs remain unchanged
-
----
-
-### Browser Requirements
-
-· Chrome 57+
-· Firefox 52+
-· Microsoft Edge 15+
-· Safari 10.1+
-· FF 48
-
-Note: Internet Explorer all versions do NOT support wemlinux!
-
-### License
-
-MIT License
+- Supported: Chrome 57+ / Firefox 52+ / Edge 15+ / Safari 10.1+
+- **Not supported: Internet Explorer (all versions)**
+- License: MIT
