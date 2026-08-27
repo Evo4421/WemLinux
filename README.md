@@ -2,7 +2,7 @@
 
 WemLinux is a "mini Linux" that runs in your browser: it simulates a complete file system in memory (webfs), ships with a shell that supports pipes, redirection, variables, functions and control flow — all packed into **a single JS file**. This tutorial takes you from "running commands" to "writing your own commands, manipulating the file system, and using every API".
 
-Current version: **wemlinux2 v2.3** (author: Evo, MIT License)
+Current version: **wemlinux2 v2.4** (author: Evo, MIT License)
 
 ---
 
@@ -24,6 +24,7 @@ Current version: **wemlinux2 v2.3** (author: Evo, MIT License)
   - [stdlib.proc: Command Management](#stdlibproc-command-management)
   - [stdlib.utils: Utilities](#stdlibutils-utilities)
 - [Hands-On: Write a Complete Custom Command](#hands-on-write-a-complete-custom-command)
+- [Virtual Processes & Signals (2.4 added)](#virtual-processes--signals-24-added)
 - [system Overview (__sys)](#system-overview-sys)
 - [Built-in Command Cheat Sheet](#built-in-command-cheat-sheet)
 - [Browser Requirements & License](#browser-requirements--license)
@@ -93,6 +94,8 @@ WemLinux is built from four layers. Once you see how they cooperate, nothing els
 ```
 
 **One-liner to remember**: the shell "talks", the commandRouter "finds someone to do the job", webfs "stores things", and stdlib is "your toolbox".
+
+**⑤ Virtual Processes (2.4 added)**: Starting with v2.4, WemLinux gains a layer of **virtual processes** — the first-class citizen and the most important concept of the whole system. webfs manages "storing things", while virtual processes manage "doing work": running multiple programs at once, sending signals to control them, pausing/resuming/killing them. There is a dedicated chapter later in this tutorial.
 
 Now let's start from the bottom — webfs — and work our way up.
 
@@ -336,7 +339,7 @@ Meet all six modules in one glance:
 | `path` | Path join & parse | Joining paths, extracting filenames |
 | `io` | Output to the command result | Command prints multiple lines |
 | `sys` | Env vars / cwd / process | Read env, see current dir |
-| `proc` | Register / invoke commands | Register commands, call other commands |
+| `proc` | Register / invoke commands + virtual processes | Register/call commands, spawn processes (2.4 added) |
 | `utils` | String/number helpers | Escaping, formatting, zero-padding |
 
 Grab them (short names are handy):
@@ -599,6 +602,8 @@ proc.unregister(name);          // cleanup
 ```
 
 > `proc.register` and `window.registerCommand` do the same thing — pick either. The difference: proc lives inside the standard library, so command code doesn't have to jump out to the global scope.
+>
+> **v2.4 addition: proc is also the entry point to virtual processes** — `proc.spawn` / `proc.kill` / `proc.list` / `proc.get` / `proc.count` / `proc.limits` / `proc.setLimit`. See the "Virtual Processes & Signals" chapter below.
 
 ---
 
@@ -714,6 +719,138 @@ todo list
 
 ---
 
+## Virtual Processes & Signals (2.4 added)
+
+Starting with v2.4, WemLinux introduces **virtual processes** — the **first-class citizen** and the most important concept of the whole system. They let the shell genuinely run multiple programs "at the same time", control their life & death, pause and resume, all backed by a complete **signal mechanism**. If webfs is where things are "stored", virtual processes are where work "happens".
+
+### Spawning a Virtual Process
+
+`stdlib.proc.spawn` creates a virtual process. It returns an object carrying a `pid` (process ID); the process keeps its own `status`, `cwd`, `started` time, and more:
+
+```js
+const proc = window.wemlinux.stdlib.proc;
+
+// Create a virtual process named "myjob"
+const r = proc.spawn('myjob', (p) => {
+  console.log('process ' + p.pid + ' started');
+  return new Promise(res => setTimeout(() => { console.log('job done'); res(); }, 1000));
+});
+// r => { ok: true, pid: 2, proc: { pid:2, name:"myjob", status:"running", ... } }
+```
+
+- `fn` is the work the process performs; it receives the process object `p`. If it returns a Promise, the process automatically becomes `exited` when it resolves.
+- `proc.list()` lists all active processes; `proc.get(pid)` looks one up by pid; `proc.count()` returns the active count.
+- `proc.kill(pid)` terminates a process.
+
+**Process state machine**: `running` → `stopped` (via STOP) → `exited`. `exited` and `zombie` are not active and won't appear in `proc.list()`.
+
+### Listing Processes & `ps`
+
+```js
+proc.list();
+// [{ pid:2, name:"myjob", status:"running", active:true, cwd:"/", started:..., exitCode:0, mem:0 }, ...]
+```
+
+Use `ps` in the shell to view all processes, or `top` for a monitoring view.
+
+### The Signal System
+
+Signals are the "secret codes" of inter-process communication. WemLinux supports a full set: `SIGHUP(1)` `SIGINT(2)` `SIGQUIT(3)` … `SIGKILL(9)` `SIGTERM(15)` `SIGCONT(18)` `SIGSTOP(19)`, etc.
+
+**Send signals: the `kill` command**
+
+```bash
+sleep 100 &        # background task → [1] 1234
+kill -9 1234       # force kill (SIGKILL)
+kill -TERM 1234    # graceful terminate (SIGTERM)
+kill -19 1234      # pause (SIGSTOP)
+kill -18 1234      # continue (SIGCONT)
+kill -l            # list all signals
+```
+
+**Catch signals: the `trap` command** — attach a command to a signal, run it when received:
+
+```bash
+trap 'echo interrupted' INT   # catch INT (Ctrl-C)
+trap - INT                    # clear it
+trap -l                       # list signals
+```
+
+**Listen in code** (`stdlib.sys.signal`):
+
+```js
+const sys = window.wemlinux.stdlib.sys;
+sys.signal.on('INT', () => console.log('I was Ctrl-C\\'d'));
+sys.signal.off('INT');   // remove the listener
+sys.signal.list();       // ["SIGINT", ...]
+```
+
+### Job Control: background `&`, jobs, bg/fg, wait
+
+```bash
+sleep 3 &          # run in background → [1] 1234
+jobs               # show Running / Done
+wait               # wait for all background jobs to finish
+fg                 # bring a background job to the foreground
+bg                 # resume a paused background job
+```
+
+### Resource Limits: ulimit
+
+Limit how many virtual processes can run at once, so nothing gets out of hand:
+
+```bash
+ulimit -n          # show the soft limit (default 256)
+ulimit -a          # show soft & hard
+ulimit -n 300      # set soft to 300 (cannot exceed hard)
+```
+
+```js
+proc.limits();          // { soft:256, hard:512 }
+proc.setLimit(300, 700);// set soft & hard together
+proc.setLimit(900, 700);// false — soft cannot exceed hard
+```
+
+Beyond the soft limit, `spawn` is rejected: `{ ok:false, error:"resource temporarily unavailable", limit:256 }`.
+
+### Subshells & exec Replacement
+
+```bash
+( cd /etc && pwd )   # cd inside a subshell; parent dir unaffected on exit
+exec bash            # replace the current shell with bash
+exec -l sh           # login-style replacement
+```
+
+### Restricted Execution: the `jsc` Command (2.4 added)
+
+`jsc` is a **safe** JS runner: it forbids touching HTML (40+ DOM globals such as `document`/`window`/`navigator` are all blocked), allowing only JS syntax plus the wemlinux2 standard library. Perfect for running untrusted scripts:
+
+```bash
+jsc "1+1"                                      # 2 — expressions print directly
+jsc "typeof document"                          # undefined — can't touch DOM
+jsc "module.exports=function(a){return a[0]}"  hello   # hello
+jsc /path/to/script.js                          # run a .js file (restricted)
+```
+
+Meanwhile `source` / `.` can now also load `.js` files — and, exactly like executables, run them **fully open** (no DOM restrictions):
+
+```bash
+source my.js     # fully-open JS execution
+. my.js          # equivalent
+```
+
+### Shell Engine Enhancements (2.4 added)
+
+v2.4 also upgraded the command parser:
+
+- **Multi-line blocks**: `if/while/for/case/function` can now span multiple lines
+- **Command substitution `$()`**: supports spaces, nesting and concatenation (`a$(echo b)c`)
+- **test logical operators**: `!` / `-a` / `-o`, plus `==`
+- **`&&` / `||` fix**: no longer misdetected as background jobs
+- **Single vs double quotes** now match bash: single quotes don't expand variables/`$()`, double quotes do
+
+---
+
 ## system Overview (__sys)
 
 `window.wemlinux.system` (a.k.a. `__sys`) is the lower-level interface, mainly for the **host environment** (page scripts, bot frameworks). Prefer stdlib inside custom commands; keep this for reference:
@@ -730,6 +867,8 @@ todo list
 | Exceptions | `system.catch_excp(fn)` | sync+async unified capture → `{ok, value}` |
 | Symlink | `system.softlink.create/target/isLink/resolve` | full symlink support |
 | Process | `system.pid()` / `system.exit(c)` / `system.exitCode()` | process & exit codes |
+| Virtual proc (2.4) | `proc.spawn(name,fn)` / `proc.kill(pid)` / `proc.list()` / `proc.limits()` | create/kill/list virtual processes, view limits |
+| Signals (2.4) | `system.signal.on(sig,fn)` / `off` / `list`; `window.emitSig(sig)` | listen/remove signals, emit a signal |
 | Commands | `system.which(cmd)` / `system.exec(cmd)` / `system.register(name, fn)` | locate/execute/register |
 | Delay | `system.sleep(ms)` | Promise-based sleep |
 
@@ -762,7 +901,10 @@ const r = sys.getargs(['serve', '--port', '8080', '-v', 'file.txt'], {
 
 **Control flow**: `if` `then` `else` `fi` `for` `while` `do` `done` `case` `esac` `break` `continue` `return` `function`
 
-**Process & system**: `ps` `top` `kill` `killall` `jobs` `bg` `fg` `nice` `sleep` `time` `times` `uptime` `free` `dmesg` `uname` `hostname` `last` `w` `who` `whoami` `id`
+**Process & system**: `ps` `top` `kill` `killall` `jobs` `bg` `fg` `wait` `nice` `sleep` `time` `times` `uptime` `free` `dmesg` `uname` `hostname` `last` `w` `who` `whoami` `id`
+　　(v2.4 enhanced: `kill` supports `-9/-TERM/-19/-18/-l`, new `trap`, `ulimit`)
+
+**Restricted execution (2.4 added)**: `jsc` (safe JS, no HTML access)
 
 **Network (simulated)**: `ping` `curl` `wget` `ifconfig` `netstat` `nslookup`
 
