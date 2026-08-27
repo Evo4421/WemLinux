@@ -381,7 +381,7 @@ window.webfs = window.webfs || (function() {
                 "home/user","home/root","etc/init.d","usr/bin","usr/local/bin","var/log"];
     for (var i = 0; i < dirs.length; i++) mkdir(dirs[i]);
     write("/etc/hostname", "humminglinux\n");
-    write("/etc/motd", "Welcome to WemLinux - a lightweight Linux simulator powered by webfs\n");
+    write("/etc/motd", "Welcome to WemLinux - a lightweight Linux simulator.\n");
     write("/etc/passwd", "root:x:0:0:root:/root:/bin/bash\nuser:x:1000:1000:user:/home/user:/bin/bash\n");
     write("/etc/hostname", "humminglinux\n");
     write("/home/user/README.txt", "Welcome to WemLinux!\nType 'help' to see available commands.\n");
@@ -437,7 +437,7 @@ window.getFileModeString = window.getFileModeString || function(path) {
 
 
 /**
- * wemlinux v2.3
+ * wemlinux v2.4
  * @author: evo
  * @date: 2026-08-26
  * @license: MIT License
@@ -526,7 +526,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     },history:[],permissions: {
       
     },ulimit: {
-      soft:256,hard:256,processes:[]
+      soft:256,hard:512,processes:[]
     },jobs:[],backgroundJobs:[],lastOutput:"",lastExitCode:0,oldpwd:"/",dirStack:[],functions: {
       
     },loopDepth:0,breakLevel:0,continueLevel:0
@@ -542,7 +542,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     },history:[],permissions: {
       
     },ulimit: {
-      soft:256,hard:256,processes:[]
+      soft:256,hard:512,processes:[]
     },jobs:[],backgroundJobs:[],lastOutput:"",lastExitCode:0,oldpwd:"/",dirStack:[],functions: {
       
     },loopDepth:0,breakLevel:0,continueLevel:0
@@ -559,7 +559,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
   }),window._state&&!window._state.dirStack&&(window._state.dirStack=[]),window._state&&!window._state.functions&&(window._state.functions= {
     
   }),window._state&&!window._state.history&&(window._state.history=[]),window._state&&!window._state.ulimit&&(window._state.ulimit= {
-    soft:256,hard:256,processes:[]
+    soft:256,hard:512,processes:[]
   }),window._state&&!window._state.jobs&&(window._state.jobs=[]),window._state&&!window._state.backgroundJobs&&(window._state.backgroundJobs=[]);
   const e=window._state,t=document.getElementById("output"),n=document.getElementById("input");
   let r=[],i=-1,s=null,o=!1;
@@ -648,6 +648,8 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       
     }
   }function v(t) {
+    const _sq=[];
+    t=t.replace(/'[^']*'/g,function(m){_sq.push(m);return"\u0003"+(_sq.length-1)+"\u0003"});
     let n=t;
     if(t.includes("$?")) {
       const t=void 0!==e.lastExitCode?e.lastExitCode:0;
@@ -676,7 +678,73 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return m
       }
     }))
-    return n
+    return n.replace(/\u0003(\d+)\u0003/g,function(m,d){return _sq[+d]})
+  }async function expandC(t,dv){
+    t=String(t==null?"":t);
+    if(dv!==false)t=v(t);
+    const _sq=[];
+    t=t.replace(/'[^']*'/g,function(m){_sq.push(m);return"\u0003"+(_sq.length-1)+"\u0003"});
+    let guard=0;
+    while(/\$\((?!\()[^)]*\)/.test(t)&&guard++<20){
+      const m=t.match(/\$\((?!\()[^)]*\)/);
+      if(!m)break;
+      const cmd=m[0].slice(2,-1);
+      const out=await b(cmd.trim());
+      t=t.replace(m[0],(out==null?"":out).trim());
+    }
+    return t.replace(/\u0003(\d+)\u0003/g,function(m,d){return _sq[+d]});
+  }function inBlock(s){
+    s=String(s||"").trim();
+    const m=s.match(/^(if|while|for|case)\b/);
+    if(!m)return false;
+    const k=m[1],close={if:"fi",while:"done",for:"done",case:"esac"}[k];
+    const opens=(s.match(new RegExp("\\b"+k+"\\b","g"))||[]).length;
+    const closes=(s.match(new RegExp("(^|[;])\\s*"+close+"\\b","gm"))||[]).length;
+    return opens>closes;
+  }function smartSplit(s){
+    const out=[],parts=String(s||"").split(";");let buf="";
+    for(let i=0;i<parts.length;i++){
+      buf=(buf?buf+";":"")+parts[i];
+      if(!inBlock(buf)){out.push(buf.trim());buf="";}
+    }
+    if(buf.trim())out.push(buf.trim());
+    return out;
+  }function _singleTest(t){
+    t=String(t==null?"":t);
+    if(t.startsWith("-e ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"}
+    if(t.startsWith("-f ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&!webfs.isDir(e)?"":"1"}
+    if(t.startsWith("-d ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.isDir&&webfs.isDir(e)?"":"1"}
+    if(t.startsWith("-r ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"}
+    if(t.startsWith("-w ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"}
+    if(t.startsWith("-x ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"}
+    if(t.startsWith("-s ")){const e=webfs.normalizePath(t.slice(3).trim());return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&(webfs.getFileSize(e)||0)>0?"":"1"}
+    if(t.startsWith("-z ")){const e=t.slice(3).trim();return""===e||'""'===e||"''"===e?"":"1"}
+    if(t.startsWith("-n ")){const e=t.slice(3).trim();return""!==e&&'""'!==e&&"''"!==e?"":"1"}
+    const r=t.match(/^(.+?)\s*!=\s*(.+)$/);
+    if(r){var R1=r[1].trim().replace(/^["']|["']$/g,""),R2=r[2].trim().replace(/^["']|["']$/g,"");return R1!==R2?"":"1";}
+    const n=t.match(/^(.+?)\s*(==|=)\s*(.+)$/);
+    if(n){var A1=n[1].trim().replace(/^["']|["']$/g,""),A2=n[3].trim().replace(/^["']|["']$/g,"");return A1===A2?"":"1";}
+    const i=t.match(/^(.+?)\s*-eq\s*(.+)$/);
+    if(i)return(parseInt(i[1].trim())||0)===(parseInt(i[2].trim())||0)?"":"1";
+    const s=t.match(/^(.+?)\s*-ne\s*(.+)$/);
+    if(s)return(parseInt(s[1].trim())||0)!==(parseInt(s[2].trim())||0)?"":"1";
+    const o=t.match(/^(.+?)\s*-gt\s*(.+)$/);
+    if(o)return(parseInt(o[1].trim())||0)>(parseInt(o[2].trim())||0)?"":"1";
+    const c=t.match(/^(.+?)\s*-ge\s*(.+)$/);
+    if(c)return(parseInt(c[1].trim())||0)>=(parseInt(c[2].trim())||0)?"":"1";
+    const a=t.match(/^(.+?)\s*-lt\s*(.+)$/);
+    if(a)return(parseInt(a[1].trim())||0)<(parseInt(a[2].trim())||0)?"":"1";
+    const l=t.match(/^(.+?)\s*-le\s*(.+)$/);
+    return l?(parseInt(l[1].trim())||0)<=(parseInt(l[2].trim())||0)?"":"1":"0"
+  }function _evalTestExpr(expr){
+    expr=String(expr==null?"":expr).trim();
+    const neg=expr.match(/^!\s+(.+)$/);
+    if(neg)return _evalTestExpr(neg[1].trim())==""?"1":"";
+    const and=expr.split(/\s+-a\s+/);
+    if(and.length>1)return and.every(function(x){return _evalTestExpr(x.trim())==""})?"":"1";
+    const or=expr.split(/\s+-o\s+/);
+    if(or.length>1)return or.some(function(x){return _evalTestExpr(x.trim())==""})?"":"1";
+    return _singleTest(expr);
   }function y(e) {
     if(!e||""===e.trim())return"";
     let t="";
@@ -721,14 +789,14 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           const ei=rest2.indexOf("; else ");
           const body1=ei>-1?rest2.slice(0,ei):rest2;
           const body2=ei>-1?rest2.slice(ei+7):"";
-          const ca=v(m1[1]).split(/\s+/);
+          const ca=(await expandC(m1[1])).split(/\s+/);
           const t=await s.execute(ca[0],ca.slice(1));
           const chosen=(""===t||null==t||"0"===t)?body1:body2;
           if(chosen.trim()) {
             const o2=await x(chosen);
             if(o2&&""!==o2)r.push(o2)
           }continue
-        }d=!0,h=n.slice(2).trim(),p=[],m=[],w=!1;
+        }d=!0,h=n.slice(2).trim().replace(/;\s*then\s*$/,""),p=[],m=[],w=!1;
         continue
       }if(d) {
         if("then"===n)continue;
@@ -737,7 +805,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           continue
         }if("fi"===n) {
           d=!1;
-          const e=v(h).split(/\s+/);
+          const e=(await expandC(h)).split(/\s+/);
           if(e.length>0) {
             const t=await s.execute(e[0],e.slice(1));
             let n=""===t||null==t||"0"===t?p.join("\n"):m.join("\n");
@@ -753,7 +821,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         if(m1) {
           let cnt=0;
           while(cnt<100) {
-            const ca=v(m1[1]).split(/\s+/);
+            const ca=(await expandC(m1[1])).split(/\s+/);
             const t=await s.execute(ca[0],ca.slice(1));
             if(""!==t&&null!=t&&"0"!==t)break;
             const o2=await x(m1[2]);
@@ -863,7 +931,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     if(!i)return Promise.resolve("");
     const q=function(s) {
       const a=[];
-      const t=s.replace(/"[^"]*"|'[^']*'/g,function(m) {
+      const t=s.replace(/"[^"]*"|'[^']*'|\$\([^)]*\)/g,function(m) {
         return a.push(m)-1+"\u0001"
       });
       return {
@@ -874,15 +942,25 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         }
       }
     }(i);
+    const _amp=q.text.split(/(?<![&])\s*&\s*(?![&])/);
+    if(_amp.length>1){
+      const _fgS=q.restore(_amp.pop()).trim();
+      const _parts=[];
+      for(let _ai=0;_ai<_amp.length;_ai++){const _pc=q.restore(_amp[_ai]).trim();if(_pc)_parts.push(_pc)}
+      const _bgo=[];
+      for(const _pc of _parts){const _r=bgStart(_pc);_bgo.push(_r.ok?"["+_r.job.num+"] "+_r.pid:_pc+": "+_r.error)}
+      const _pre=_bgo.join("\n");
+      return b(_fgS).then(function(_o){return _pre?(_pre+"\n"+_o):_o});
+    }
     const o=function(e) {
       const kw=e.match(/^\s*(if|while|for|case)\s+/);
       if(kw) {
         const k=kw[1];
-        const ok=(k==="if"&&e.indexOf("then")>-1&&e.indexOf("fi")>-1)||
-                 (k==="while"&&e.indexOf("do")>-1&&e.indexOf("done")>-1)||
-                 (k==="for"&&e.indexOf("in")>-1&&e.indexOf("do")>-1&&e.indexOf("done")>-1)||
-                 (k==="case"&&e.indexOf("esac")>-1)||
-                 (k==="function"&&e.indexOf("{")>-1&&e.indexOf("}")>-1);
+        const ok=(k==="if"&&e.indexOf("then")>-1&&e.indexOf("fi")>-1&&/(^|;)\s*fi\s*;?\s*$/.test(e))||
+                 (k==="while"&&e.indexOf("do")>-1&&e.indexOf("done")>-1&&/(^|;)\s*done\s*;?\s*$/.test(e))||
+                 (k==="for"&&e.indexOf("in")>-1&&e.indexOf("do")>-1&&e.indexOf("done")>-1&&/(^|;)\s*done\s*;?\s*$/.test(e))||
+                 (k==="case"&&e.indexOf("esac")>-1&&/(^|;)\s*esac\s*;?\s*$/.test(e))||
+                 (k==="function"&&e.indexOf("{")>-1&&e.indexOf("}")>-1&&/(^|;)\s*}\s*;?\s*$/.test(e));
         if(ok)return {
           type:"simple",cmd:e.trim()
         };
@@ -895,14 +973,14 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       if(n.length>1)return {
         type:"and",parts:n
       };
-      const blk=e.match(/^(.*?);\s*(while\s+[\s\S]*\bdone|for\s+[\s\S]*\bdone|if\s+[\s\S]*\bfi|case\s+[\s\S]*\besac)\s*;?\s*$/);
+      const blk=e.match(/^(.*?);\s*(while\s+[\s\S]*?\bdone|for\s+[\s\S]*?\bdone|if\s+[\s\S]*?\bfi|case\s+[\s\S]*?\besac)\s*;?\s*$/);
       if(blk) {
         const pre=blk[1].split(";").map(x=>x.trim()).filter(x=>x);
         return {
           type:"seq",parts:pre.concat([blk[2].trim()])
         };
       }
-      const r=e.split(/;/).map(e=>e.trim());
+      const r=smartSplit(e);
       if(r.length>1)return {
         type:"seq",parts:r
       };
@@ -950,7 +1028,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       return t.catch(function(x) {
         return"sh: error: "+(x&&x.message||x)
       })
-    }return function(n,r) {
+    }return(async function(n,r) {
       const i=(r&&r.cmd||n).trim();
       if(!i)return Promise.resolve("");
       const o=i.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$/);
@@ -960,10 +1038,14 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return n=v(n),g(t)?(e.lastExitCode=1,Promise.resolve("sh: "+t+": readonly variable")):(e.vars[t]=n,e.exported.includes(t)&&(e.env[t]=n),e.lastExitCode=0,Promise.resolve(""))
       }const c=i.split(/\s+/);
       if(0===c.length)return Promise.resolve("");
-      const l=v(q.restore(c[0])),kt=["for","while","if","case","function"],kc=-1<kt.indexOf(l),u=c.slice(1).map(function(x) {
-        const r=kc?q.restore(x):v(q.restore(x));
-        return(r.startsWith('"')&&r.endsWith('"'))||(r.startsWith("'")&&r.endsWith("'"))?r.slice(1,-1):r
-      });
+      const l=v(q.restore(c[0])),kt=["for","while","if","case","function"],kc=-1<kt.indexOf(l);
+      const u=[];
+      for(const _x of c.slice(1)){
+        let r=kc?q.restore(_x):v(q.restore(_x));
+        if(r.indexOf("$(")>-1)r=await expandC(r,false);
+        r=(r.startsWith('"')&&r.endsWith('"'))||(r.startsWith("'")&&r.endsWith("'"))?r.slice(1,-1):r;
+        u.push(r);
+      }
       let f=s.execute(l,u);
       return Promise.resolve(f).then(n=> {
         if("__CLEAR__"===n)return t&&(t.innerHTML=""),e.lastExitCode=0,"";
@@ -976,7 +1058,7 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           return e.lastExitCode=1,"sh: redirect error: "+t.message
         }return n&&(n.includes("command not found")||n.includes("error")||n.includes("failed"))?e.lastExitCode=1:e.lastExitCode=0,n
       }).catch(t=>(e.lastExitCode=1,"sh: error: "+t.message))
-    }(o.cmd, function(e) {
+    })(o.cmd, function(e) {
       let t=e,n=!1,r=null;
       const i=t.match(/(>>)\s*(\S+)/);
       i&&(n=!0,r=i[2],t=t.replace(i[0],"").trim());
@@ -1020,31 +1102,56 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
     }catch(e) {
       return"sh: error: "+e.message
     }
-  }function E() {
+  }function needsContinuation(s){
+  const t=String(s||"").replace(/#.*$/g,"");
+  if(/\\\s*$/.test(t))return true;
+  if((t.match(/\bif\b/g)||[]).length>(t.match(/\bfi\b/g)||[]).length)return true;
+  if((t.match(/\bwhile\b/g)||[]).length+(t.match(/\bfor\b/g)||[]).length>(t.match(/\bdone\b/g)||[]).length)return true;
+  if((t.match(/\bcase\b/g)||[]).length>(t.match(/\besac\b/g)||[]).length)return true;
+  if((t.match(/{/g)||[]).length>(t.match(/}/g)||[]).length)return true;
+  return false;
+}
+window.needsContinuation=needsContinuation;
+function E() {
     if(o)return;
     if(!t||!n)return void setTimeout(E,100);
     o=!0,t.innerHTML="";
     const e=document.createElement("div");
-    e.textContent='WemLinux v2.3 - Type "help" for available commands',t.appendChild(e);
+    e.textContent='WemLinux v2.4 - Type "help" for available commands',t.appendChild(e);
     const s=document.createElement("div");
-    s.textContent="$ ",t.appendChild(s),t.scrollTop=t.scrollHeight,n.disabled=!1,n.focus(),n.addEventListener("keydown",async function(e) {
-      if("Enter"===e.key) {
-        const e=this.value;
-        if(!e.trim())return void(this.value="");
-        const n=document.createElement("div");
-        n.textContent="$ "+e,t.appendChild(n);
-        const s=await S(e);
-        if(s&&""!==s) {
-          const e=document.createElement("div");
-          e.textContent=s,t.appendChild(e)
-        }this.value="";
-        const o=document.createElement("div");
-        o.textContent="$ ",t.appendChild(o),t.scrollTop=t.scrollHeight,e.trim()&&(r.push(e.trim()),i=r.length)
-      }"ArrowUp"===e.key&&(e.preventDefault(),r.length>0&&(i=Math.max(0,i-1),this.value=r[i]||"")),"ArrowDown"===e.key&&(e.preventDefault(),i<r.length-1?(i=Math.min(r.length-1,i+1),this.value=r[i]||""):(i=r.length,this.value=""))
-    }),document.addEventListener("click",()=> {
-      n.disabled||n.focus()
-    })
-  }function O() {
+    s.textContent="$ ",t.appendChild(s),t.scrollTop=t.scrollHeight,n.disabled=!1,n.focus();
+    let mlBuf="";
+    function prmpt(){const d=document.createElement("div");d.textContent=mlBuf?"> ":"$ ";t.appendChild(d);t.scrollTop=t.scrollHeight}
+    function outL(txt){if(txt&&""!==txt){const d=document.createElement("div");d.textContent=txt,t.appendChild(d)}}
+    n.addEventListener("keydown",async function(ev){
+      if(("c"===ev.key||"C"===ev.key)&&(ev.ctrlKey||ev.metaKey)){
+        ev.preventDefault();this.value="";mlBuf="";
+        const d=document.createElement("div");d.textContent="^C",t.appendChild(d);
+        try{const o=emitSig("SIGINT");if(o)outL(o)}catch(x){}
+        prmpt();return;
+      }
+      if("Enter"===ev.key){
+        const v=this.value;
+        if(!v.trim()&&!mlBuf){this.value="";prmpt();return}
+        const d=document.createElement("div");d.textContent=(mlBuf?"> ":"$ ")+v,t.appendChild(d);
+        let run=null;
+        if(mlBuf){
+          if(v.trim()===""||v.trim().toLowerCase()==="eof"){run=mlBuf;mlBuf=""}
+          else{mlBuf+="\n"+v;if(!needsContinuation(mlBuf)){run=mlBuf;mlBuf=""}}
+        }else{
+          if(needsContinuation(v)){mlBuf=v;this.value="";prmpt();return}
+          run=v;
+        }
+        if(run!==null){const s2=await S(run);outL(s2)}
+        this.value="";prmpt();
+        v.trim()&&(r.push(v.trim()),i=r.length)
+      }
+      "ArrowUp"===ev.key&&(ev.preventDefault(),r.length>0&&(i=Math.max(0,i-1),this.value=r[i]||"")),
+      "ArrowDown"===ev.key&&(ev.preventDefault(),i<r.length-1?(i=Math.min(r.length-1,i+1),this.value=r[i]||""):(i=r.length,this.value=""))
+    });
+    document.addEventListener("click",()=> { n.disabled||n.focus() })
+  }
+function O() {
     (function() {
       if(s)return s;
       s=new c,s.register("cd",function(t) {
@@ -1125,123 +1232,124 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
  */
 .register("help", function(e) {
         var DESCRIPTIONS = {
-    ".": "同 source",
-    "alias": "定义别名",
-    "awk": "AWK 文本处理",
-    "base64": "Base64 编解码",
-    "bash": "运行 bash 脚本",
-    "bc": "计算器",
-    "bg": "后台任务",
-    "break": "跳出循环",
-    "case": "分支选择",
-    "cat": "显示文件内容",
-    "cd": "切换目录",
-    "chmod": "修改权限",
-    "chown": "修改所有者",
-    "clad": "设备调试",
-    "clear": "清屏",
-    "command": "执行命令",
-    "continue": "继续循环",
-    "cp": "复制文件",
-    "curl": "HTTP 请求",
-    "cut": "按列裁剪文本",
-    "date": "显示日期时间",
-    "dd": "数据块复制",
-    "declare": "声明变量",
-    "df": "磁盘使用",
-    "dir": "列出目录（同 ls）",
-    "dirs": "目录栈",
-    "dmesg": "内核日志",
-    "do": "循环体",
-    "done": "循环结束",
-    "du": "统计目录占用",
-    "echo": "输出文本",
-    "ed": "行编辑器",
-    "else": "否则分支",
-    "env": "显示环境变量",
-    "esac": "case 结束",
-    "eval": "重新求值",
-    "exec": "执行替换",
-    "exit": "退出 shell",
-    "export": "导出环境变量",
-    "expr": "表达式求值",
-    "false": "返回失败",
-    "fg": "前台任务",
-    "fi": "if 结束",
-    "find": "查找文件",
-    "for": "循环",
-    "free": "内存使用",
-    "function": "定义函数",
-    "grep": "按模式搜索文本",
-    "hash": "命令哈希",
-    "head": "显示文件开头",
-    "history": "命令历史",
-    "hostname": "显示主机名",
-    "id": "显示用户身份",
-    "if": "条件分支",
-    "ifconfig": "网络接口",
-    "jobs": "任务列表",
-    "kill": "终止进程",
-    "killall": "按名终止进程",
-    "last": "登录记录",
-    "let": "算术运算",
-    "linux64": "linux64 运行器",
-    "ln": "创建链接",
-    "local": "定义局部变量",
-    "logout": "退出登录",
-    "ls": "列出目录内容",
-    "mkdir": "创建目录",
-    "mount": "挂载信息",
-    "mv": "移动/重命名文件",
-    "netstat": "网络状态",
-    "nice": "调整优先级",
-    "nslookup": "DNS 查询",
-    "ping": "网络连通测试",
-    "popd": "弹出目录栈",
-    "printf": "格式化输出",
-    "ps": "进程列表",
-    "pushd": "压入目录栈",
-    "pwd": "显示当前目录",
-    "read": "读取输入",
-    "readonly": "标记只读变量",
-    "reset": "重置终端",
-    "return": "函数返回",
-    "rm": "删除文件或目录",
-    "rmdir": "删除空目录",
-    "sed": "流编辑器",
-    "sh": "运行 shell 脚本",
-    "sha256sum": "计算 SHA-256 摘要",
-    "sleep": "延时",
-    "sort": "排序文本行",
-    "source": "执行脚本文件",
-    "stat": "显示文件状态",
-    "su": "切换用户",
-    "sudo": "提权执行",
-    "tail": "显示文件末尾",
-    "test": "条件测试",
-    "then": "if 分支体",
-    "time": "计时",
-    "times": "显示累计时间",
-    "top": "进程监视",
-    "touch": "创建/更新时间戳",
-    "tree": "树状显示目录",
-    "true": "返回成功",
-    "type": "显示命令类型",
-    "typeset": "声明变量（同 declare）",
-    "umask": "默认权限掩码",
-    "umount": "卸载",
-    "unalias": "删除别名",
-    "uname": "显示系统信息",
-    "uniq": "去重相邻行",
-    "unset": "删除变量",
-    "uptime": "运行时长",
-    "w": "谁在登录",
-    "wc": "统计行/词/字节数",
-    "wget": "下载文件",
-    "while": "条件循环",
-    "who": "登录用户",
-    "whoami": "显示当前用户",
-    "yes": "重复输出y"
+    ".": "same as source",
+    "alias": "define an alias",
+    "awk": "AWK text processing",
+    "base64": "Base64 encode/decode",
+    "bash": "run a bash script",
+    "bc": "calculator",
+    "bg": "background job",
+    "break": "break out of loop",
+    "case": "conditional branch",
+    "cat": "show file content",
+    "cd": "change directory",
+    "chmod": "change permissions",
+    "chown": "change owner",
+    "clad": "device debug",
+    "clear": "clear screen",
+    "command": "execute a command",
+    "continue": "continue loop",
+    "cp": "copy files",
+    "curl": "HTTP request",
+    "cut": "cut columns from text",
+    "date": "show date/time",
+    "dd": "copy data blocks",
+    "declare": "declare a variable",
+    "df": "disk usage",
+    "dir": "list directory (same as ls)",
+    "dirs": "directory stack",
+    "dmesg": "kernel log",
+    "do": "loop body",
+    "done": "loop end",
+    "du": "estimate directory usage",
+    "echo": "print text",
+    "ed": "line editor",
+    "else": "else branch",
+    "env": "show environment variables",
+    "esac": "end of case",
+    "eval": "re-evaluate",
+    "exec": "execute replacement",
+    "exit": "exit shell",
+    "export": "export environment variable",
+    "expr": "evaluate expression",
+    "false": "return failure",
+    "fg": "foreground job",
+    "fi": "end of if",
+    "find": "find files",
+    "for": "loop",
+    "free": "memory usage",
+    "function": "define a function",
+    "grep": "search text by pattern",
+    "hash": "command hash",
+    "head": "show beginning of file",
+    "history": "command history",
+    "hostname": "show hostname",
+    "id": "show user identity",
+    "if": "conditional branch",
+    "ifconfig": "network interfaces",
+    "jobs": "job list",
+    "kill": "terminate process",
+    "killall": "kill processes by name",
+    "last": "login records",
+    "let": "arithmetic evaluation",
+    "linux64": "linux64 runner",
+    "ln": "create links",
+    "local": "define a local variable",
+    "logout": "log out",
+    "ls": "list directory contents",
+    "mkdir": "create directory",
+    "mount": "mount info",
+    "mv": "move/rename files",
+    "netstat": "network status",
+    "nice": "adjust priority",
+    "nslookup": "DNS query",
+    "ping": "network connectivity test",
+    "popd": "pop directory stack",
+    "printf": "formatted output",
+    "ps": "process list",
+    "pushd": "push directory stack",
+    "pwd": "show current directory",
+    "read": "read input",
+    "readonly": "mark variable read-only",
+    "reset": "reset terminal",
+    "return": "return from function",
+    "rm": "remove files or directories",
+    "rmdir": "remove empty directory",
+    "sed": "stream editor",
+    "sh": "run a shell script",
+    "sha256sum": "compute SHA-256 digest",
+    "sleep": "delay",
+    "sort": "sort lines of text",
+    "source": "execute script file",
+    "stat": "show file status",
+    "su": "switch user",
+    "sudo": "run with elevated privileges",
+    "tail": "show end of file",
+    "test": "condition test",
+    "then": "if branch body",
+    "time": "time",
+    "times": "show cumulative time",
+    "top": "process monitor",
+    "touch": "create/update timestamp",
+    "tree": "display directory tree",
+    "true": "return success",
+    "type": "show command type",
+    "typeset": "declare variable (same as declare)",
+    "ulimit": "set or show resource limits",
+    "umask": "default permission mask",
+    "umount": "unmount",
+    "unalias": "remove an alias",
+    "uname": "show system info",
+    "uniq": "deduplicate adjacent lines",
+    "unset": "remove a variable",
+    "uptime": "uptime",
+    "w": "who is logged in",
+    "wc": "count lines/words/bytes",
+    "wget": "download files",
+    "while": "conditional loop",
+    "who": "logged-in users",
+    "whoami": "show current user",
+    "yes": "repeat output"
         };
         if (e.length > 0) {
             var name = e[0];
@@ -1422,115 +1530,101 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
             return"sed: cannot write to "+f+": "+e.message
           }return""
         }return R
-      }),s.register("rm",function(e) {
-        if(0===e.length)return f("rm");
-        var t= {
-          recursive:!1,force:!1
-        },n=[];
-        for(var r of e)if("-r"===r||"-R"===r)t.recursive=!0;
-        else if("-f"===r)t.force=!0;
-        else if("-rf"===r||"-fr"===r)t.recursive=!0,t.force=!0;
-        else {
-          if(r.startsWith("-"))return p("rm",r);
-          n.push(r)
-        }if(0===n.length)return f("rm");
-        for(var i=[],s=0;
-        s<n.length;
-        s++) {
-          var o=n[s],c=a(o),l="/"===c||"/data"===c||"/system"===c||"/vendor"===c||"/boot"===c||"/etc"===c||"/root"===c||"/bin"===c||"/dev"===c||"/sbin"===c||"/proc"===c||"/sys"===c||"/init"===c||"/apex"===c||"/product"===c||"/odm"===c;
-          if(l&&window._sudoMode) {
-            if("10086"!==prompt("Password required for rm "+o+":"))return window._sudoMode=!1,"su: Authentication failure";
-            try {
-              var u=webfs.getFileList(c)||[];
-              Array.isArray(u)||(u=[]);
-              for(var m=0;
-              m<u.length;
-              m++) {
-                var g=u[m],v=c+"/"+g.name;
-                if("directory"===g.type)(function e(t) {
-                  var n=webfs.getFileList(t)||[];
-                  Array.isArray(n)||(n=[]);
-                  for(var r=0;
-                  r<n.length;
-                  r++) {
-                    var i=t+"/"+n[r].name;
-                    if("directory"===n[r].type)e(i);
-                    else try {
-                      webfs.delFile(i)
-                    }catch(e) {
-                      
-                    }
-                  }try {
-                    webfs.delFile(t)
-                  }catch(e) {
-                    
-                  }
-                })(v);
-                else try {
-                  webfs.delFile(v)
-                }catch(e) {
-                  
-                }
-              }try {
-                webfs.delFile(c)
-              }catch(e) {
-                
-              }
-            }catch(e) {
-              
-            }try {
-              for(var y=["WemLinuxDB","TempRootDB"],x=0;
-              x<y.length;
-              x++)try {
-                indexedDB.deleteDatabase(y[x])
-              }catch(e) {
-                
-              }if("undefined"!=typeof localStorage)try {
-                localStorage.clear()
-              }catch(e) {
-                
-              }if("undefined"!=typeof sessionStorage)try {
-                sessionStorage.clear()
-              }catch(e) {
-                
-              }e&&(e.vars= {
-                
-              },e.readonly=[],e.exported=[],e.aliases= {
-                
-              },e.history=[],e.permissions= {
-                
-              },e.ulimit= {
-                soft:256,hard:256,processes:[]
-              },e.jobs=[],e.backgroundJobs=[],e.dirStack=[],e.functions= {
-                
-              })
-            }catch(e) {
-              
-            }return window._sudoMode=!1,setTimeout(function() {
-              "undefined"!=typeof webfs&&webfs.exit&&webfs.exit()
-            },300),""
-          }if(l)return"rm: it is dangerous to operate recursively on '"+o+"'";
-          if("undefined"==typeof webfs||!webfs.delFile)return"rm: cannot remove '"+c+"': No such file or directory";
-          if(!webfs.fileExist(c)) {
-            if(t.force)continue;
-            return d("rm",c)
-          }if(webfs.isDir(c)&&!t.recursive)return h("rm",c);
-          if(webfs.isDir(c)&&t.recursive) {
-            w(c);
-            try {
-              webfs.delFile(c)
-            }catch(e) {
-              
-            }t.force||i.push("rm: removed '"+c+"'")
-          }else {
-            try {
-              webfs.delFile(c)
-            }catch(e) {
-              
-            }t.force||i.push("rm: removed '"+c+"'")
-          }
-        }return i.join("\n")
-      }),s.register("cp",function(e) {
+      });
+/* ===== v2.3.1 security: password store / protected dirs / glob ===== */
+var WEMLINUX_PASS_KEY="wemlinux_passwd_hash";
+function passHash(pw){var h=5381,s=String(pw==null?"":pw);for(var i=0;i<s.length;i++)h=((h<<5)+h+s.charCodeAt(i))|0;return"!"+(h>>>0).toString(36)+"x"}
+function getPassHash(){try{if(typeof localStorage!=="undefined"&&localStorage.getItem){return localStorage.getItem(WEMLINUX_PASS_KEY)}}catch(e){}return null}
+function setPassHash(h){try{if(typeof localStorage!=="undefined"&&localStorage.setItem)localStorage.setItem(WEMLINUX_PASS_KEY,h)}catch(e){}}
+function clearPassHash(){try{if(typeof localStorage!=="undefined"&&localStorage.removeItem)localStorage.removeItem(WEMLINUX_PASS_KEY)}catch(e){}}
+function passIsSet(){return!!getPassHash()}
+function verifyPass(input){var h=getPassHash();return!!h&&passHash(input)===h}
+function ensurePass(){if(passIsSet())return true;for(var tries=0;tries<3;tries++){var a1=null,a2=null;try{a1=prompt("First run: set the root password:")}catch(e){}try{a2=prompt("Re-enter to confirm:")}catch(e){}if(a1===null||a2===null)return false;if(a1===a2&&a1){setPassHash(passHash(a1));return true}}return false}
+function authPass(ctx){if(!ensurePass())return false;var input=null;try{input=prompt(ctx||"Password required:")}catch(e){return false}return verifyPass(input||"")}
+var PROTECTED_DIRS=["/data","/system","/vendor","/boot","/etc","/root","/bin","/dev","/sbin","/proc","/sys","/init","/apex","/product","/odm"];
+function isProtectedPath(p){var raw=String(p||"");var n=raw.replace(/\/+$/,"");if(n===""||n==="/"||PROTECTED_DIRS.indexOf(n)>-1)return"self";for(var i=0;i<PROTECTED_DIRS.length;i++){if(n.indexOf(PROTECTED_DIRS[i]+"/")===0)return"child"}return null}
+function globExpand(pat){if(typeof pat!=="string"||!/[*?\[\]]/.test(pat))return null;var abs=a(pat),slash=abs.lastIndexOf("/"),dir=slash<=0?"/":abs.slice(0,slash),base=abs.slice(slash+1);var entries=[];try{entries=webfs.getFileList(dir)||[]}catch(e){return[]}var re=null;try{re=new RegExp("^"+base.replace(/[.+^${}()|\[\]\\]/g,"\\$&").replace(/\*/g,"[^/]*").replace(/\?/g,"[^/]")+"$")}catch(e){return[]}var out=[];for(var i=0;i<entries.length;i++){if(re.test(entries[i].name))out.push(dir==="/"?"/"+entries[i].name:dir+"/"+entries[i].name)}return out}
+s.register("rm",function(e) {
+  if(0===e.length)return f("rm");
+  var t={recursive:false,force:false},n=[];
+  for(var r=0;r<e.length;r++) {
+    var arg=e[r];
+    if("-r"===arg||"-R"===arg)t.recursive=true;
+    else if("-f"===arg)t.force=true;
+    else if("-rf"===arg||"-fr"===arg)t.recursive=true,t.force=true;
+    else {
+      if(arg.indexOf("-")===0&&arg.length>1)return p("rm",arg);
+      n.push(arg)
+    }
+  }
+  if(0===n.length)return f("rm");
+  /* glob 展开：堵住 rm -rf /* 与 rm -rf * 的绕过 */
+  var targets=[];
+  for(var s=0;s<n.length;s++) {
+    var o=n[s],tg=globExpand(o);
+    if(tg===null)tg=[a(o)];
+    else if(tg.length===0){var patAbs=a(o),starIdx=patAbs.lastIndexOf("*"),patDir=starIdx>0?patAbs.slice(0,starIdx).replace(/\/+$/,""):patAbs;if(patDir==="")patDir="/";tg=[isProtectedPath(patDir)!==null?patDir:patAbs];}
+    for(var m=0;m<tg.length;m++)targets.push(tg[m]);
+  }
+  /* 任一目标命中危险目录（本身或子路径）→ 必须密码验证 */
+  var needAuth=false;
+  for(var s2=0;s2<targets.length;s2++){if(isProtectedPath(targets[s2])!==null)needAuth=true}
+  if(needAuth) {
+    if(!authPass("Password required for rm:"))return window._sudoMode=false,"rm: Authentication failure";
+  }
+  var resetDone=false,msgs=[];
+  for(var s3=0;s3<targets.length;s3++) {
+    var c=targets[s3],prot=isProtectedPath(c);
+    if(prot==="self") {
+      /* 危险目录本身：密码已验证，允许递归删除（保留恢复出厂副作用，仅一次） */
+      try {
+        var u=webfs.getFileList(c)||[];
+        Array.isArray(u)||(u=[]);
+        for(var m2=0;m2<u.length;m2++) {
+          var g=u[m2],v=c+"/"+g.name;
+          if("directory"===g.type)(function e2(t2) {
+            var n2=webfs.getFileList(t2)||[];
+            Array.isArray(n2)||(n2=[]);
+            for(var r2=0;r2<n2.length;r2++) {
+              var i2=t2+"/"+n2[r2].name;
+              if("directory"===n2[r2].type)e2(i2);
+              else try{webfs.delFile(i2)}catch(e3){}
+            }
+            try{webfs.delFile(t2)}catch(e3){}
+          })(v);
+          else try{webfs.delFile(v)}catch(e3){}
+        }
+        try{webfs.delFile(c)}catch(e3){}
+      }catch(e4) {}
+      if(!resetDone) {
+        resetDone=true;
+        try {
+          for(var y=["wemlinux","WemLinuxDB","TempRootDB"],x=0;x<y.length;x++)try{indexedDB.deleteDatabase(y[x])}catch(e5){}
+          if("undefined"!=typeof localStorage)try{localStorage.clear()}catch(e5){}
+          if("undefined"!=typeof sessionStorage)try{sessionStorage.clear()}catch(e5){}
+          e&&(e.vars={},e.readonly=[],e.exported=[],e.aliases={},e.history=[],e.permissions={},e.ulimit={soft:256,hard:512,processes:[]},e.jobs=[],e.backgroundJobs=[],e.dirStack=[],e.functions={});
+          try{clearPassHash()}catch(e5){}
+        }catch(e5){}
+        setTimeout(function(){"undefined"!=typeof webfs&&webfs.exit&&webfs.exit()},300);
+      }
+    } else if(prot==="child") {
+      /* 危险目录子路径：密码已验证，允许删除 */
+      if(!webfs.fileExist(c)){if(t.force)continue;return d("rm",c)}
+      if(webfs.isDir(c)&&!t.recursive)return h("rm",c);
+      if(webfs.isDir(c)&&t.recursive){w(c);try{webfs.delFile(c)}catch(e6){}}
+      else try{webfs.delFile(c)}catch(e6){}
+      if(!t.force)msgs.push("rm: removed '"+c+"'");
+    } else {
+      /* 普通路径 */
+      if(!webfs.fileExist(c)){if(t.force)continue;return d("rm",c)}
+      if(webfs.isDir(c)&&!t.recursive)return h("rm",c);
+      if(webfs.isDir(c)&&t.recursive){w(c);try{webfs.delFile(c)}catch(e7){}}
+      else try{webfs.delFile(c)}catch(e7){}
+      if(!t.force)msgs.push("rm: removed '"+c+"'");
+    }
+  }
+  return msgs.join("\n")
+}),s.register("cp",function(e) {
         if(e.length<2)return f("cp");
         const t=a(e[0]),n=a(e[1]);
         if("undefined"==typeof webfs||!webfs.read||!webfs.write)return"cp: cannot copy '"+t+"' to '"+n+"'";
@@ -1556,8 +1650,75 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return"root"
       }),s.register("id",function() {
         return"uid=0(root) gid=0(root) groups=0(root)"
-      }),s.register("uname",function(e) {
-        return 0===e.length?"Linux":"-a"===e[0]?"Linux "+(window._state&&window._state.env&&window._state.env.HOSTNAME||"linux")+" 5.10.198-android #1 SMP aarch64 GNU/Linux":"-s"===e[0]?"Linux":"-n"===e[0]?(window._state&&window._state.env&&window._state.env.HOSTNAME||"linux"):"-r"===e[0]?"5.10.198-android":"-m"===e[0]?"aarch64":"uname: invalid option '"+e[0]+"'"
+      }),s.register("nohup",function(a){
+  if(a.length===0)return f("nohup");
+  var cmd=[],outFile="nohup.out";
+  for(var i=0;i<a.length;i++){
+    if(a[i]===">"){outFile=a[i+1]||"nohup.out";i++;continue}
+    cmd.push(a[i]);
+  }
+  if(cmd.length===0)return"nohup: no command given";
+  var r=bgStart(cmd.join(" "));
+  if(!r.ok)return cmd.join(" ")+": "+r.error;
+  r.proc.nohup=true;
+  r.job.promise.then(function(out){
+    if(out){try{var cur=(webfs.fileExist&&webfs.fileExist(outFile))?(webfs.read(outFile)||""):"";webfs.write(outFile,cur+out+"\n")}catch(x){}}
+  });
+  return"nohup: ignoring input and appending output to '"+outFile+"'";
+}),s.register("systemctl",function(a){
+  if(a.length===0)return f("systemctl");
+  e.services=e.services||{};
+  var sub=a[0],svc=a[1];
+  if(sub==="list-units"||sub==="list"){
+    var ks=Object.keys(e.services);
+    if(ks.length===0)return"UNIT                      LOAD   ACTIVE   SUB";
+    return"UNIT                      LOAD   ACTIVE   SUB\n"+ks.map(function(n){var s=e.services[n];return(n+".service").padEnd(26)+(s.status==="active"?"  loaded   active   running":"  loaded   inactive dead")}).join("\n");
+  }
+  if(sub==="status"){
+    if(!svc)return"systemctl: no service given";
+    var s=e.services[svc]||{};
+    return"● "+svc+".service - "+(s.desc||svc)+"\n   Loaded: loaded (/etc/systemd/system/"+(svc||"")+".service; enabled)\n   Active: "+(s.status==="active"?"active (running)":"inactive (dead)")+(s.status==="active"?"\n   Main PID: "+s.pid:"");
+  }
+  if(sub==="start"){
+    if(!svc)return"systemctl: no service given";
+    e.services[svc]=e.services[svc]||{};
+    var s=e.services[svc];s.status="active";s.pid=s.pid||allocPid();s.started=Date.now();s.desc=s.desc||svc;
+    return"Job for "+svc+".service started.";
+  }
+  if(sub==="stop"){
+    if(!svc)return"systemctl: no service given";
+    var s=e.services[svc];if(!s)return"Failed to stop "+svc+".service: Unit not loaded.";
+    s.status="inactive";return"Stopped "+svc+".service.";
+  }
+  if(sub==="restart"){
+    if(!svc)return"systemctl: no service given";
+    var s=e.services[svc]||(e.services[svc]={});s.status="active";s.pid=s.pid||allocPid();s.started=Date.now();
+    return"Job for "+svc+".service restarted.";
+  }
+  if(sub==="enable"){
+    if(!svc)return"systemctl: no service given";
+    e.services[svc]=e.services[svc]||{};e.services[svc].enabled=true;
+    return"Created symlink /etc/systemd/system/multi-user.target.wants/"+svc+".service.";
+  }
+  if(sub==="disable"){
+    if(!svc)return"systemctl: no service given";
+    if(e.services[svc])e.services[svc].enabled=false;
+    return"Removed /etc/systemd/system/multi-user.target.wants/"+svc+".service.";
+  }
+  if(sub==="is-active"){
+    if(!svc)return"systemctl: no service given";
+    var s=e.services[svc];return s&&s.status==="active"?"active":"inactive";
+  }
+  return"systemctl: unknown action '"+sub+"'";
+}),s.register("systemd",function(a){
+  e.services=e.services||{};
+  var ks=Object.keys(e.services);
+  if(a.length&&a[0]==="--version")return"systemd 252 (252.19-wemlinux)\n+PAM +AUDIT +SELINUX +IMA +APPARMOR +SMACK +SYSVINIT +UTMP +LIBCRYPTSETUP +GCRYPT +GNUTLS +OPENSSL +ACL +XZ +LZ4 +ZSTD +BZIP2 +ELFUTILS +KMOD +IDN2 -IDN +PCRE2 default-hierarchy=unified";
+  if(a.length&&a[0]==="analyze")return"Startup finished in 1.234s (kernel) + 2.345s (userspace) = 3.579s";
+  if(a.length&&a[0]==="status")return"● humminglinux\n    State: running\n     Jobs: 0 queued\n   Failed: 0 units\n    Since: "+new Date().toString().slice(0,24)+"\n systemd: 252 running (HummingLinux)";
+  return"systemd 252 running (HummingLinux)\nLoaded: "+(ks.length||0)+" services\n"+(ks.length?ks.map(function(n){return"  "+n+".service - "+(e.services[n].status==="active"?"running":"dead")}).join("\n"):"  (none)");
+}),s.register("uname",function(e) {
+        return 0===e.length?"HummingLinux":"-a"===e[0]?"HummingLinux "+(window._state&&window._state.env&&window._state.env.HOSTNAME||"humminglinux")+" 6.1.0-wemlinux #1 SMP PREEMPT aarch64 GNU/HummingLinux":"-s"===e[0]?"HummingLinux":"-n"===e[0]?(window._state&&window._state.env&&window._state.env.HOSTNAME||"humminglinux"):"-r"===e[0]?"6.1.0-wemlinux":"-m"===e[0]?"aarch64":"-o"===e[0]?"GNU/HummingLinux":"uname: invalid option '"+e[0]+"'"
       }),s.register("clear",function() {
         return t&&(t.innerHTML=""),"__CLEAR__"
       }),s.register("reset",function() {
@@ -1619,20 +1780,13 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         const s=parseInt(r)||512,o=parseInt(i)||0;
         return o+"+0 records in\n"+o+"+0 records out\n"+o*s+" bytes copied"
       }),s.register("su",function(e) {
-        if(0===e.length)return"";
-        const t=e[0];
-        return"root"!==t?"su: user "+t+" does not exist":""
-      }),s.register("sudo",function(e) {
-        if(0===e.length)return f("sudo");
-        var t=e[0],n=e.slice(1);
-        if(("rm"===t||"kill"===t||"killall"===t)&&n.some(function(e) {
-          return"-rf"===e||"-r"===e||"-f"===e
-        })) {
-          window._sudoMode=!0;
-          var r=b(t+(n.length>0?" "+n.join(" "):""));
-          return window._sudoMode=!1,r
-        }return"ls"===t||"cat"===t?"sudo: "+t+": command not found":""
-      }),s.register("case",function(e) {
+  if(0===e.length)return"";
+  var t=e[0];
+  if("root"!==t)return"su: user "+t+" does not exist";
+  if(!authPass("Password for root:"))return window._sudoMode=false,"su: Authentication failure";
+  window._sudoMode=true;
+  return""
+}),s.register("case",function(e) {
         var t=e.join(" "),n=t.indexOf("in"),r=t.indexOf("esac");
         if(-1===n||-1===r)return"case: syntax error";
         for(var i=t.slice(0,n).trim(),s=t.slice(n+2,r).trim(),o=s.split(/\s*;;\s*/),c=!1,a=[],l=0;
@@ -1674,17 +1828,55 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         return""
       }),s.register("kill",function(t) {
         if(0===t.length)return f("kill");
-        const n=[];
-        for(const e of t)m(e)&&n.push(e);
-        if(0===n.length)return f("kill");
-        let r=[];
-        for(const t of n) {
-          if("1"===t||"2"===t)return"bash: kill: ("+t+") - Operation not permitted";
-          var i=e.ulimit.processes.find(function(e) {
-            return e.pid===t&&e.active
-          });
-          i?(i.active=!1,r.push("kill: signal sent to PID "+t)):r.push("bash: kill: ("+t+") - No such process")
-        }return r.join("\n")
+        if(t[0]==="-l"){
+          var rows=[" 1 SIGHUP"," 2 SIGINT"," 3 SIGQUIT"," 4 SIGILL"," 5 SIGTRAP"," 6 SIGABRT"," 7 SIGBUS"," 8 SIGFPE"," 9 SIGKILL","10 SIGUSR1","11 SIGSEGV","12 SIGUSR2","13 SIGPIPE","14 SIGALRM","15 SIGTERM","17 SIGCHLD","18 SIGCONT","19 SIGSTOP","20 SIGTSTP","21 SIGTTIN","22 SIGTTOU","28 SIGWINCH"];
+          return rows.join("\n");
+        }
+        var sig="TERM",pids=[];
+        for(var i=0;i<t.length;i++){
+          var x=t[i];
+          if(x.indexOf("-")===0&&x.length>1){
+            var sn=x.slice(1);
+            if(/^\d+$/.test(sn))sig=sn==="9"?"KILL":sn==="15"?"TERM":sn==="19"?"STOP":sn==="18"?"CONT":"TERM";
+            else sig=sn.toUpperCase();
+          } else if(/^\d+$/.test(x))pids.push(x);
+        }
+        if(pids.length===0)return f("kill");
+        var out=[];
+        for(var i=0;i<pids.length;i++){
+          var pid=pids[i];
+          if(pid===e.pid||pid==="1"){out.push("bash: kill: ("+pid+") - Operation not permitted");continue;}
+          var p=null;for(var j=0;j<e.ulimit.processes.length;j++)if(String(e.ulimit.processes[j].pid)===pid){p=e.ulimit.processes[j];break;}
+          if(!p||p.status==="exited"||p.status==="zombie"){out.push("bash: kill: ("+pid+") - No such process");continue;}
+          if(sig==="STOP"){setProcStatus(p,"stopped");out.push("["+pid+"] stopped");}
+          else if(sig==="CONT"){setProcStatus(p,"running");out.push("["+pid+"] continued");}
+          else{setProcStatus(p,"exited");p.exitCode=128+(signalNum(sig)||15);out.push("kill: signal sent to PID "+pid);}
+        }
+        return out.join("\n");
+      }),s.register("trap",function(t) {
+        if(t.length===0){e.traps=e.traps||{};var ks=Object.keys(e.traps);return ks.length?ks.map(k=>"trap -- '"+e.traps[k]+"' "+k).join("\n"):"";}
+        if(t[0]==="-l"){
+          var rows=[" 1 SIGHUP"," 2 SIGINT"," 3 SIGQUIT"," 4 SIGILL"," 5 SIGTRAP"," 6 SIGABRT"," 7 SIGBUS"," 8 SIGFPE"," 9 SIGKILL","10 SIGUSR1","11 SIGSEGV","12 SIGUSR2","13 SIGPIPE","14 SIGALRM","15 SIGTERM","17 SIGCHLD","18 SIGCONT","19 SIGSTOP","20 SIGTSTP","21 SIGTTIN","22 SIGTTOU","28 SIGWINCH"];
+          return rows.join("\n");
+        }
+        if(t[0]==="-"&&t.length>1){e.traps=e.traps||{};delete e.traps[t[1].toUpperCase()];return"";}
+        if(t.length>=2&&t[0].indexOf("-")!==0){
+          e.traps=e.traps||{};
+          var cmd=(t[0].indexOf("'")===0||t[0].indexOf('"')===0)?t[0].slice(1,-1):t[0];
+          for(var i=1;i<t.length;i++)e.traps[t[i].toUpperCase()]=cmd;
+          return"";
+        }
+        return"trap: usage: trap [-l] ['command'] SIGNAL...";
+      }),s.register("wait",function(t) {
+        var bgs=e.backgroundJobs||[];
+        var pids=t.filter(function(x){return/^\d+$/.test(x)});
+        if(pids.length===0){
+          var jobs=bgs.filter(function(j){return j.proc.status!=="exited"});
+          if(jobs.length===0)return"";
+          return Promise.all(jobs.map(function(j){return j.promise})).then(function(){return""});
+        }
+        var pend=pids.map(function(pid){var j=bgs.find(function(j){return String(j.proc.pid)===pid});return j?j.promise:Promise.resolve("")});
+        return Promise.all(pend).then(function(){return""});
       }),s.register("killall",function(t) {
         if(0===t.length)return f("killall");
         const n=[];
@@ -1727,16 +1919,17 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
         const e=8388608,t=Math.floor(Math.random()*e*.5),n=e-t;
         return"              total        used        free      shared  buff/cache   available\nMem:      "+String(e).padStart(10)+" "+String(t).padStart(10)+" "+String(n).padStart(10)+" "+String(Math.floor(1024*Math.random()*1024)).padStart(10)+" "+String(Math.floor(1024*Math.random()*1024)).padStart(10)+" "+String(n+Math.floor(1024*Math.random()*1024)).padStart(10)+"\nSwap:     0           0           0"
       }),s.register("ps",function() {
-        let t=["PID   TTY      TIME     CMD"];
-        t.push(e.pid+"   pts/0    00:00:01  bash");
+        let t=["PID   TTY      TIME     CMD      STATUS"];
+        t.push(e.pid+"   pts/0    00:00:01  bash     running");
         const n=e.ulimit.processes.filter(e=>e.active);
-        for(const e of n.slice(0,5))t.push(e.pid+"   pts/0    00:00:00  "+e.name);
+        for(const e of n.slice(0,5))t.push(e.pid+"   pts/0    00:00:00  "+(e.name||"proc")+"     "+(e.status||"running"));
         return t.join("\n")
       }),s.register("top",function() {
         let t=["PID  USER     PR  NI  VIRT  RES  SHR  S  %CPU  %MEM  TIME+  COMMAND"];
         t.push(e.pid+"  root     20   0  12.8m 4.2m 3.8m  S   0.0   0.1  0:00.01  bash");
         const n=e.ulimit.processes.filter(e=>e.active);
-        for(const e of n.slice(0,5))t.push(e.pid+"  root     20   0  8.6m  2.1m 1.8m  S   0.0   0.1  0:00.00  "+e.name);
+        const stc={"running":"R","sleeping":"S","stopped":"T","zombie":"Z","exited":"X"};
+        for(const e of n.slice(0,5))t.push(e.pid+"  root     20   0  8.6m  2.1m 1.8m  "+(stc[e.status]||"S")+"   0.0   0.1  0:00.00  "+(e.name||"proc"));
         return t.join("\n")
       }),s.register("export",function(t) {
         if(0===t.length)return Object.keys(e.env).map(t=>"declare -x "+t+'="'+e.env[t]+'"').join("\n");
@@ -1902,49 +2095,8 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }),s.register("test",function(e) {
         if(0===e.length)return f("test");
         const t=e.join(" ");
-        if(t.startsWith("-e ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
-        }if(t.startsWith("-f ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&!webfs.isDir(e)?"":"1"
-        }if(t.startsWith("-d ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.isDir&&webfs.isDir(e)?"":"1"
-        }if(t.startsWith("-r ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
-        }if(t.startsWith("-w ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
-        }if(t.startsWith("-x ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)?"":"1"
-        }if(t.startsWith("-s ")) {
-          const e=webfs.normalizePath(t.slice(3).trim());
-          return"undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(e)&&(webfs.getFileSize(e)||0)>0?"":"1"
-        }if(t.startsWith("-z ")) {
-          const e=t.slice(3).trim();
-          return""===e||'""'===e||"''"===e?"":"1"
-        }if(t.startsWith("-n ")) {
-          const e=t.slice(3).trim();
-          return""!==e&&'""'!==e&&"''"!==e?"":"1"
-        }const n=t.match(/^(.+?)\s*=\s*(.+)$/);
-        if(n)return n[1].trim()===n[2].trim()?"":"1";
-        const r=t.match(/^(.+?)\s*!=\s*(.+)$/);
-        if(r)return r[1].trim()!==r[2].trim()?"":"1";
-        const i=t.match(/^(.+?)\s*-eq\s*(.+)$/);
-        if(i)return(parseInt(i[1].trim())||0)===(parseInt(i[2].trim())||0)?"":"1";
-        const s=t.match(/^(.+?)\s*-ne\s*(.+)$/);
-        if(s)return(parseInt(s[1].trim())||0)!==(parseInt(s[2].trim())||0)?"":"1";
-        const o=t.match(/^(.+?)\s*-gt\s*(.+)$/);
-        if(o)return(parseInt(o[1].trim())||0)>(parseInt(o[2].trim())||0)?"":"1";
-        const c=t.match(/^(.+?)\s*-ge\s*(.+)$/);
-        if(c)return(parseInt(c[1].trim())||0)>=(parseInt(c[2].trim())||0)?"":"1";
-        const a=t.match(/^(.+?)\s*-lt\s*(.+)$/);
-        if(a)return(parseInt(a[1].trim())||0)<(parseInt(a[2].trim())||0)?"":"1";
-        const l=t.match(/^(.+?)\s*-le\s*(.+)$/);
-        return l?(parseInt(l[1].trim())||0)<=(parseInt(l[2].trim())||0)?"":"1":"0"
+        if(/^!\s+/.test(t)||/\s+-a\s+/.test(t)||/\s+-o\s+/.test(t))return _evalTestExpr(t);
+        return _singleTest(t)
       }),s.register("[",function(e) {
         const t=e.join(" ");
         return t.endsWith("]")?s.execute("test",[t.slice(0,-1).trim()]):"test: missing ]"
@@ -1982,17 +2134,47 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
       }),s.register("popd",function() {
         return e.dirStack&&0!==e.dirStack.length?(e.cwd=e.dirStack.pop(),e.dirStack.join(" ")||"~"):"popd: directory stack empty"
       }),s.register("jobs",function() {
-        const t=e.ulimit.processes.filter(e=>e.active);
-        return 0===t.length?"":t.map((e,t)=>"["+String(t+1)+"]  Running                 "+e.name).join("\n")
+        const jl=e.backgroundJobs||[];
+        if(0===jl.length)return"";
+        return jl.map(j=>{
+          let st=j.proc.status==="exited"?"Done":j.proc.status==="stopped"?"Stopped":"Running";
+          return"["+j.num+"] "+st+"\t"+j.cmd;
+        }).join("\n");
       }),s.register("bg",function() {
-        const t=e.ulimit.processes.filter(e=>e.active);
-        return 0===t.length?"":"[1] "+t[0].name+" &"
+        const jl=e.backgroundJobs||[];
+        if(0===jl.length)return"bg: no current job";
+        const stp=jl.filter(j=>j.proc.status==="stopped");
+        const num=stp.length?stp[stp.length-1].num:jl[jl.length-1].num;
+        const j=jl.find(j=>j.num===num);
+        if(!j)return"bg: job not found";
+        if(j.proc.status==="stopped")setProcStatus(j.proc,"running");
+        return"["+j.num+"] "+j.cmd+" &";
       }),s.register("fg",function() {
-        const t=e.ulimit.processes.filter(e=>e.active);
-        return 0===t.length?"":t[0].name+" (PID "+t[0].pid+")"
+        const jl=e.backgroundJobs||[];
+        if(0===jl.length)return"fg: no current job";
+        const num=jl[jl.length-1].num;
+        const j=jl.find(j=>j.num===num);
+        if(!j)return"fg: job not found: "+num;
+        if(j.proc.status==="stopped")setProcStatus(j.proc,"running");
+        return j.promise.then(out=>{return j.cmd+(out?"\n"+out:"")});
       }),s.register("logout",function() {
         return"undefined"!=typeof webfs&&webfs.exit&&webfs.exit(),""
-      }),s.register("umask",function() {
+      }),s.register("ulimit",function(a){
+  var soft=e.ulimit.soft,hard=e.ulimit.hard,showAll=false,which="S",setSoft=null,setHard=null;
+  for(var i=0;i<a.length;i++){
+    var arg=a[i];
+    if(arg==="-a")showAll=true;
+    else if(arg==="-S")which="S";
+    else if(arg==="-H")which="H";
+    else if(arg==="-n"||arg==="-f"||arg==="-s"){/* resource name: value follows or display only */}
+    else if(/^\d+$/.test(arg)){var val=parseInt(arg,10);if(which==="H")setHard=val;else setSoft=val;}
+    else return"ulimit: invalid option '"+arg+"'\nTry 'ulimit --help' for more information.";
+  }
+  if(showAll)return"open files                    (-n) "+soft+"\nopen files (hard limit)       (-Hn) "+hard+"\nmax user processes            (-u) "+soft+"\nvirtual memory                (-v) unlimited\ncpu time                      (-t) unlimited\nfile size                     (-f) unlimited";
+  if(setHard!==null){if(setHard<soft)return"ulimit: cannot set hard limit below soft limit";hard=setHard;e.ulimit.hard=hard;}
+  if(setSoft!==null){if(setSoft>hard)return"ulimit: cannot set soft limit above hard limit";soft=setSoft;e.ulimit.soft=soft;}
+  return which==="H"?String(hard):String(soft);
+}),s.register("umask",function() {
         return"0022"
       }),s.register("printf",function(e) {
         if(0===e.length)return f("printf");
@@ -2029,21 +2211,26 @@ window.executeShellCommand=window.executeShellCommand||function(e) {
           return"sha256sum: error calculating hash"
         }
       }),s.register("clad",function() {
-        return new Promise(e=> {
-          try {
-            const t=indexedDB.deleteDatabase("WemLinuxDB");
-            t.onsuccess=function() {
-              e("clad: all IndexedDB data cleared")
-            },t.onerror=function() {
-              e("clad: failed to clear IndexedDB data")
-            },t.onblocked=function() {
-              e("clad: database blocked, close other tabs")
-            }
-          }catch(t) {
-            e("clad: error: "+t.message)
-          }
-        })
-      }),s.register("if",function(e) {
+  try{if(typeof confirm==="function"&&!confirm("Clear all WemLinux data? The page will refresh automatically"))return"clad: cancelled"}catch(e){}
+  try{clearPassHash()}catch(e){}
+  var dbs=["wemlinux","WemLinuxDB","TempRootDB"];
+  return new Promise(function(res) {
+    function next(i) {
+      if(i>=dbs.length) {
+        try{setTimeout(function(){try{location.reload()}catch(e){}},300)}catch(e){}
+        res("clad: all data cleared, refreshing page...");
+        return;
+      }
+      try {
+        var req=indexedDB.deleteDatabase(dbs[i]);
+        req.onsuccess=function(){next(i+1)};
+        req.onerror=function(){next(i+1)};
+        req.onblocked=function(){next(i+1)};
+      }catch(e) { next(i+1) }
+    }
+    next(0);
+  })
+}),s.register("if",function(e) {
         const t=e.join(" "),n=t.indexOf("then"),r=t.indexOf("fi");
         if(-1===n||-1===r)return"if: syntax error";
         const i=v(t.slice(0,n).replace(/;\s*$/,"").trim()),o=t.slice(n+4,r).trim(),c=i.split(/\s+/);
@@ -2552,67 +2739,38 @@ s.register("cut",function(e) {
         }catch(e) {
           return"expr: "+e.message
         }
-      }),s.register("sh",function(e) {
-        if(0===e.length)return"";
-        if("-c"===e[0]&&e.length>1)return b(e.slice(1).join(" "));
-        var t=a(e[0]);
-        if("undefined"==typeof webfs||!webfs.read)return"sh: "+t+": No such file";
-        if(!webfs.fileExist(t))return d("sh",t);
-        if(webfs.isDir(t))return"sh: "+t+": Is a directory";
-        try {
-          for(var n=(webfs.read(t)||"").split("\n"),r=[],i=0;
-          i<n.length;
-          i++) {
-            var s=n[i].trim();
-            if(""!==s&&!s.startsWith("#")&&!s.startsWith("#!")) {
-              var o=s.indexOf(" #");
-              if(-1!==o) {
-                var c=s.substring(0,o).trim();
-                ""!==c&&r.push(c)
-              }else r.push(s)
-            }
-          }var l=r.join("; ");
-          return""===l?"":b(l)
-        }catch(e) {
-          return"sh: "+t+": error - "+e.message
-        }
-      }),s.register("bash",function(e) {
-        if(0===e.length)return"";
-        if("-c"===e[0]&&e.length>1)return b(e.slice(1).join(" "));
-        var t=a(e[0]);
-        if("undefined"==typeof webfs||!webfs.read)return"bash: "+t+": No such file";
-        if(!webfs.fileExist(t))return d("bash",t);
-        if(webfs.isDir(t))return"bash: "+t+": Is a directory";
-        try {
-          for(var n=(webfs.read(t)||"").split("\n"),r=[],i=0;
-          i<n.length;
-          i++) {
-            var s=n[i].trim();
-            if(""!==s&&!s.startsWith("#")&&!s.startsWith("#!")) {
-              var o=s.indexOf(" #");
-              if(-1!==o) {
-                var c=s.substring(0,o).trim();
-                ""!==c&&r.push(c)
-              }else r.push(s)
-            }
-          }var l=r.join("\n");
-          return""===l?"":b(l)
-        }catch(e) {
-          return"bash: "+t+": error - "+e.message
-        }
-      }),s.register("linux64",function(e) {
+      }),s.register("sh",function(a){return runShellCmd("sh",a)}),s.register("bash",function(a){return runShellCmd("bash",a)}),s.register("linux64",function(e) {
         return 0===e.length?f("linux64"):b(e.join(" "))
-      }),s.register("exec",function(e) {
-        return 0===e.length?f("exec"):b(e.join(" "))
+      }),s.register("exec",function(a){
+        if(a.length===0)return f("exec");
+        var a0=a[0],rest=a.slice(1),login=false;
+        if(a0==="-l"||a0==="--login"){login=true;if(rest.length===0)return f("exec");a0=rest[0];rest=rest.slice(1);}
+        if(a0==="sh"||a0==="bash"){
+          var keep=["PATH","HOME","USER","SHELL","PWD","OLDPWD","TERM","SHLVL","LANG","HOSTNAME","LOGNAME"],base={};
+          for(var i=0;i<keep.length;i++)if(e.env[keep[i]]!==undefined)base[keep[i]]=e.env[keep[i]];
+          base.PWD=e.cwd;base.SHLVL=String((parseInt(e.env.SHLVL||"1",10)||1));
+          e.vars={};e.env=base;e.oldpwd=e.cwd;
+          if(login){try{return b("source /home/.profile").then(function(){return a0+": exec: shell replaced (login)"})}catch(x){return a0+": exec: shell replaced (login)"}}
+          return a0+": exec: shell replaced";
+        }
+        return b(a.join(" "));
       }),s.register("eval",function(e) {
         return 0===e.length?f("eval"):b(e.join(" "))
+      }),s.register("jsc",function(e) {
+        if(0===e.length)return"usage: jsc <file.js|js-code>";
+        const t=a(e[0]);
+        const isFile="undefined"!=typeof webfs&&webfs.fileExist&&webfs.fileExist(t);
+        if(isFile){const src=webfs.read(t)||"";return executeJsSandbox(src,e.slice(1),"jsc");}
+        return executeJsSandbox(e.join(" "),[],"jsc");
       }),s.register("source",function(e) {
         if(0===e.length)return f("source");
         const t=a(e[0]);
         if("undefined"==typeof webfs||!webfs.read)return"source: "+t+": No such file";
         if(!webfs.fileExist(t))return d("source",t);
         if(webfs.isDir(t))return"source: "+t+": Is a directory";
-        const lines=(webfs.read(t)||"").split("\n");
+        const __src=(webfs.read(t)||""),__fl=(__src.split("\n")[0]||"").trim();
+        if(/\.js$/.test(t)||/^#!\s*\S*(js|node|javascript)/.test(__fl))return executeJsScript(e[0],t,__src,e.slice(1));
+        const lines=__src.split("\n");
         let p=Promise.resolve(""),outs=[];
         for(const ln of lines) {
           const s=ln.trim();
@@ -2629,7 +2787,9 @@ s.register("cut",function(e) {
         if("undefined"==typeof webfs||!webfs.read)return t+": No such file";
         if(!webfs.fileExist(t))return d(".",t);
         if(webfs.isDir(t))return t+": Is a directory";
-        const lines=(webfs.read(t)||"").split("\n");
+        const __src=(webfs.read(t)||""),__fl=(__src.split("\n")[0]||"").trim();
+        if(/\.js$/.test(t)||/^#!\s*\S*(js|node|javascript)/.test(__fl))return executeJsScript(".",t,__src,e.slice(1));
+        const lines=__src.split("\n");
         let p=Promise.resolve(""),outs=[];
         for(const ln of lines) {
           const s=ln.trim();
@@ -2660,35 +2820,27 @@ s.register("cut",function(e) {
           return k+"="+e.env[k]
         }).join("\n")
       }),s.register("passwd",function(t) {
-        if(0===t.length)return"passwd: missing operand\nUsage: passwd <new-password>";
-        const pw=t[0];
-        let h=5381,sv=String(pw);
-        for(let i=0;i<sv.length;i++)h=((h<<5)+h+sv.charCodeAt(i))|0;
-        const hash="!"+(h>>>0).toString(36)+"x";
-        try {
-          const p="/etc/passwd",content=webfs.read(p)||"",lines=content.split("\n");
-          const out=[];
-          let found=false;
-          for(const line of lines) {
-            if(line.startsWith("root:")) {
-              const parts=line.split(":");
-              parts[1]=hash;
-              out.push(parts.join(":"));
-              found=true
-            }else out.push(line)
-          }
-          if(!found)out.unshift("root:"+hash+":0:0:root:/root:/bin/bash");
-          webfs.write(p,out.join("\n"));
-          return"passwd: password updated for root"
-        }catch(e) {
-          return"passwd: error: "+e.message
-        }
-      }),s.register("{",function(e) {
+  if(0===t.length)return"passwd: missing operand\nUsage: passwd <new-password>";
+  var pw=t[0],hash=passHash(pw);
+  setPassHash(hash);
+  try {
+    var p="/etc/passwd",content=webfs.read(p)||"",lines=content.split("\n"),out=[],found=false;
+    for(var i=0;i<lines.length;i++) {
+      if(lines[i].indexOf("root:")===0){var parts=lines[i].split(":");parts[1]=hash;out.push(parts.join(":"));found=true}
+      else out.push(lines[i]);
+    }
+    if(!found)out.unshift("root:"+hash+":0:0:root:/root:/bin/bash");
+    webfs.write(p,out.join("\n"));
+    return"passwd: password updated for root";
+  }catch(e) {
+    return"passwd: error: "+e.message
+  }
+}),s.register("{",function(e) {
         return b(e.join(" "))
       }),s.register("}",function() {
         return""
       });
-      const BUILTINS=["cd","export","alias","unalias","set","unset","type","source",".","exit","shift","local","readonly","declare","typeset","let","eval","test","true","false","pwd","echo","printf","history","help","clear","read","exec","hash","jobs","fg","bg","wait","logout","umask","times","trap","return","break","continue","command","builtin"];
+      const BUILTINS=["cd","export","alias","unalias","set","unset","type","source",".","exit","shift","local","readonly","declare","typeset","let","eval","test","true","false","pwd","echo","printf","history","help","clear","read","exec","hash","jobs","fg","bg","wait","logout","ulimit","umask","times","trap","return","break","continue","command","builtin"];
       const whichPath=function(t) {
         try {
           const dirs=(e.env.PATH||"/bin").split(":");
@@ -2788,6 +2940,46 @@ s.register("cut",function(e) {
           return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));
         }
       };
+      const __domBlock={document:void 0,window:void 0,self:void 0,globalThis:void 0,top:void 0,parent:void 0,frames:void 0,navigator:void 0,location:void 0,localStorage:void 0,sessionStorage:void 0,history:void 0,screen:void 0,alert:void 0,prompt:void 0,confirm:void 0,indexedDB:void 0,WebSocket:void 0,Worker:void 0,XMLHttpRequest:void 0,fetch:void 0,Document:void 0,Element:void 0,HTMLElement:void 0,Node:void 0,Event:void 0,Image:void 0,Audio:void 0,DOMParser:void 0,MutationObserver:void 0,getComputedStyle:void 0,requestAnimationFrame:void 0,addEventListener:void 0,removeEventListener:void 0,open:void 0,close:void 0,print:void 0,scrollTo:void 0,focus:void 0,blur:void 0,postMessage:void 0};
+      const executeJsSandbox=function(code,args,cmdName){
+        __ioOut="";__ioErr="";
+        try{
+          const src=String(code==null?"":code).replace(/^#![^\n]*/,"");
+          const module={exports:{}};
+          const exportsObj=module.exports;
+          const fn=new Function("wemlinux","system","stdlib","args","module","exports","require","__dom",
+            "with(__dom){ (function(){\n"+src+"\n}).call(module); }");
+          fn(window.wemlinux,window.wemlinux.system,window.wemlinux.stdlib,args,module,exportsObj,__jsRequire,__domBlock);
+          const handler=(typeof module.exports==="function")?module.exports:(module.exports&&typeof module.exports.main==="function"?module.exports.main:null);
+          if(typeof handler!=="function"){
+            try{
+              const ef=new Function("__dom","wemlinux","system","stdlib","args","module","exports","require",
+                "with(__dom){ return (function(){\nreturn ("+src+");\n}).call(module); }");
+              const rv=ef(__domBlock,window.wemlinux,window.wemlinux.system,window.wemlinux.stdlib,args,module,exportsObj,__jsRequire);
+              return Promise.resolve(rv).then(function(out){
+                let z="";
+                if(__ioOut)z+=__ioOut;
+                if(out!=null&&String(out)!==""){if(z&&!/\n$/.test(z))z+="\n";z+=String(out);}
+                if(__ioErr)z+=(z&&!/\n$/.test(z)?"\n":"")+__ioErr;
+                __ioOut="";__ioErr="";
+                return z;
+              });
+            }catch(err){__ioOut="";__ioErr="";return Promise.resolve(__ioOut||"");}
+          }
+          const ctx={wemlinux:window.wemlinux,system:window.wemlinux.system,stdlib:window.wemlinux.stdlib,cmd:cmdName,file:"",args:args,sandbox:true};
+          try{
+            const ret=handler(args,ctx);
+            return Promise.resolve(ret).then(function(out){
+              let z="";
+              if(__ioOut)z+=__ioOut;
+              if(out!=null&&String(out)!==""){if(z&&!/\n$/.test(z))z+="\n";z+=String(out);}
+              if(__ioErr)z+=(z&&!/\n$/.test(z)?"\n":"")+__ioErr;
+              __ioOut="";__ioErr="";
+              return z;
+            });
+          }catch(err){__ioOut="";__ioErr="";return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));}
+        }catch(err){return Promise.resolve("sh: "+cmdName+": error: "+(err&&err.message||err));}
+      };
       const executeShellScript=async function(cmdName,filePath,src,args) {
         let body=src.replace(/^#![^\n]*\n?/,"");
         // 参数替换：$1..$n / ${1}..${n}（含引号内的 $1，不做分词）
@@ -2879,6 +3071,131 @@ s.register("cut",function(e) {
     })(),setTimeout(E,200)
   }"loading"===document.readyState?document.addEventListener("DOMContentLoaded",O):O(),window.executeShellCommand=S,window.handleCommand=S,window._state=e,window.safeResolvePath=a;
       /* ================= wemlinux v2.3 全局对象 / system / stdlib ================= */
+      /* ---- 虚拟进程核心：与 ulimit 联动，外部可经 __sys/__stdlib 操作 ---- */
+function enterSubShell(shellName,isLogin){
+  if(procCount()>=e.ulimit.soft)return Promise.resolve(shellName+": fork: retry: Resource temporarily unavailable");
+  var pid=allocPid(),parent={cwd:e.cwd,oldpwd:e.oldpwd,vars:e.vars,env:e.env};
+  var proc={pid:pid,name:shellName,status:"running",active:true};e.ulimit.processes.push(proc);
+  e.vars=Object.assign({},parent.vars);
+  e.env=Object.assign({},parent.env);
+  e.oldpwd=e.cwd;
+  var promptStr=shellName+(isLogin?" (login)":"")+"-5.2$ ",buf="";
+  return (async function(){
+    if(isLogin){try{await b("source /home/.profile")}catch(x){}}
+    while(true){
+      var line=null;try{line=prompt(promptStr)}catch(x){}
+      if(line===null)break;
+      line=line.trim();
+      if(line==="exit"||line==="logout")break;
+      if(line==="")continue;
+      try{var out=await b(line);if(out)buf+=(buf?"\n":"")+out}catch(x){buf+=(buf?"\n":"")+("sh: error: "+x.message)}
+    }
+    setProcStatus(proc,"exited");
+    e.cwd=parent.cwd;e.oldpwd=parent.oldpwd;e.vars=parent.vars;e.env=parent.env;
+    return buf;
+  })();
+}
+function runShellFile(shellName,args){
+  if(args.length===0)return"";
+  var t=a(args[0]);
+  if("undefined"==typeof webfs||!webfs.read)return shellName+": "+t+": No such file";
+  if(!webfs.fileExist(t))return d(shellName,t);
+  if(webfs.isDir(t))return shellName+": "+t+": Is a directory";
+  try{
+    for(var n=(webfs.read(t)||"").split("\n"),r=[],i=0;i<n.length;i++){
+      var s=n[i].trim();
+      if(""!==s&&!s.startsWith("#")&&!s.startsWith("#!")){
+        var o=s.indexOf(" #");
+        if(-1!==o){var c=s.substring(0,o).trim();""!==c&&r.push(c)}else r.push(s)
+      }
+    }
+    var l=r.join("\n");
+    return""===l?"":b(l)
+  }catch(x){return shellName+": "+t+": error - "+x.message}
+}
+function runShellCmd(shellName,args){
+  if(args.length===0)return enterSubShell(shellName,false);
+  var a0=args[0],rest=args.slice(1);
+  if(a0==="-l"||a0==="--login"){
+    if(rest.length===0)return enterSubShell(shellName,true);
+    if(rest[0]==="-c"&&rest.length>1){try{b("source /home/.profile")}catch(x){}return b(rest.slice(1).join(" "));}
+    return runShellFile(shellName,rest);
+  }
+  if(a0==="-c"&&rest.length>0)return b(rest.join(" "));
+  return runShellFile(shellName,args);
+}
+            function allocPid(){return String((parseInt(e.pid,10)||100)+e.ulimit.processes.length+1)}
+      function procCount(){var c=0;for(var i=0;i<e.ulimit.processes.length;i++)if(e.ulimit.processes[i].active)c++;return c}
+      function setProcStatus(p,st){p.status=st;p.active=(st!=="exited"&&st!=="zombie")}
+      function signalNum(sig){
+  sig=String(sig||"").toUpperCase();
+  if(sig.indexOf("SIG")===0)sig=sig.slice(3);
+  if(/^\d+$/.test(sig))return parseInt(sig,10);
+  var m={HUP:1,INT:2,QUIT:3,ILL:4,TRAP:5,ABRT:6,BUS:7,FPE:8,KILL:9,USR1:10,SEGV:11,USR2:12,PIPE:13,ALRM:14,TERM:15,CHLD:17,CONT:18,STOP:19,TSTP:20,TTIN:21,TTOU:22,WINCH:28};
+  return m[sig]||0;
+}
+function sigName(num){
+  num=Number(num)||0;
+  var m={1:"HUP",2:"INT",3:"QUIT",4:"ILL",5:"TRAP",6:"ABRT",7:"BUS",8:"FPE",9:"KILL",10:"USR1",11:"SEGV",12:"USR2",13:"PIPE",14:"ALRM",15:"TERM",16:"STKFLT",17:"CHLD",18:"CONT",19:"STOP",20:"TSTP",21:"TTIN",22:"TTOU",23:"URG",24:"XCPU",25:"XFSZ",26:"VTALRM",27:"PROF",28:"WINCH"};
+  return m[num]||("SIG"+num);
+}
+async function emitSig(sig){
+  sig=String(sig||"").toUpperCase();
+  if(sig.indexOf("SIG")!==0)sig="SIG"+sig;
+  e.signals=e.signals||{};e.traps=e.traps||{};
+  var out="";
+  (e.signals[sig]||[]).forEach(function(fn){try{var r=fn&&fn(sig);if(typeof r==="string"&&r)out+=(out?"\n":"")+r}catch(x){}});
+  var tn=sig.slice(3),tc=e.traps[tn]||e.traps[sig];
+  if(tc){try{var r2=await b(tc);if(r2)out+=(out?"\n":"")+r2}catch(x){}}
+  e.lastExitCode=128+(signalNum(sig)||0);
+  return out;
+}
+window.emitSig=emitSig;function oomKill(){
+  var lim=e.oomLimit||1048576,killed=[];
+  for(var i=0;i<e.ulimit.processes.length;i++){
+    var p=e.ulimit.processes[i];
+    if(p.active&&(p.mem||0)>lim){
+      setProcStatus(p,"exited");p.exitCode=137;killed.push(p.pid);
+    }
+  }
+  return killed;
+}
+window.oomKill=oomKill;
+      function procSpawn(name,fn){
+        if(procCount()>=e.ulimit.soft)return{ok:false,pid:null,error:"resource temporarily unavailable",limit:e.ulimit.soft};
+        var pid=allocPid(),p={pid:pid,name:name||"proc",status:"running",active:true,cwd:e.cwd,started:Date.now(),exitCode:0,mem:0};
+        e.ulimit.processes.push(p);
+        if(typeof fn==="function"){
+          try{
+            var r=fn(p);
+            if(r&&typeof r.then==="function"){r.then(function(){setProcStatus(p,"exited")}).catch(function(){setProcStatus(p,"exited");p.exitCode=1})}
+            else setProcStatus(p,"exited");
+          }catch(x){setProcStatus(p,"exited");p.exitCode=1}
+        }
+        return{ok:true,pid:pid,proc:p};
+      }
+      function procKill(pid){
+        pid=String(pid);
+        for(var i=0;i<e.ulimit.processes.length;i++)if(String(e.ulimit.processes[i].pid)===pid){if(e.ulimit.processes[i].active){setProcStatus(e.ulimit.processes[i],"exited");return true}return false}
+        return false;
+      }
+      function bgStart(cmdStr){
+        if(procCount()>=e.ulimit.soft)return{ok:false,pid:null,error:"resource temporarily unavailable",limit:e.ulimit.soft};
+        var pid=allocPid(),nm=String(cmdStr||"").trim().split(/\s+/)[0]||"job",p={pid:pid,name:nm,status:"running",active:true,cwd:e.cwd,started:Date.now(),exitCode:0,mem:0};
+        e.ulimit.processes.push(p);
+        var pr=b(String(cmdStr||"").trim()).then(function(out){setProcStatus(p,"exited");p.output=out;return out}).catch(function(x){setProcStatus(p,"exited");p.exitCode=1;return"shell: "+x.message});
+        e.backgroundJobs=e.backgroundJobs||[];
+        var j={num:e.backgroundJobs.length+1,pid:pid,proc:p,promise:pr,cmd:String(cmdStr||"").trim()};
+        e.backgroundJobs.push(j);
+        return{ok:true,pid:pid,proc:p,job:j};
+      }
+      function procList(){var o=[];for(var i=0;i<e.ulimit.processes.length;i++)if(e.ulimit.processes[i].active)o.push(e.ulimit.processes[i]);return o}
+      function procSetLimit(soft,hard){
+        if(soft!=null){if(hard!=null&&soft>hard)return false;e.ulimit.soft=soft|0}
+        if(hard!=null){if(soft!=null&&hard<soft)return false;e.ulimit.hard=hard|0}
+        return true;
+      }
+
       var __ioOut="",__ioErr="",__outHook=null,__errHook=null;
       var __sys={
         version:"2.3",
@@ -2986,8 +3303,30 @@ s.register("cut",function(e) {
         },
         /* ---- 进程/退出 ---- */
         pid:function(){return e.pid},
+        signal:{
+          on:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};(e.signals[sig]=e.signals[sig]||[]).push(fn);return true},
+          off:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};var a=e.signals[sig]||[];if(fn){var i=a.indexOf(fn);if(i>-1)a.splice(i,1)}else delete e.signals[sig];return true},
+          emit:function(sig){return emitSig(sig)},
+          list:function(){e.signals=e.signals||{};return Object.keys(e.signals).slice()},
+          traps:function(){e.traps=e.traps||{};return Object.keys(e.traps).slice()}
+        },
+        oom:{
+          kill:function(){return oomKill()},
+          limit:function(n){if(n!=null)e.oomLimit=n|0;return e.oomLimit||1048576},
+          mem:function(pid){pid=String(pid);var l=procList();for(var i=0;i<l.length;i++)if(String(l[i].pid)===pid)return l[i].mem||0;return 0},
+          setMem:function(pid,b){pid=String(pid);for(var i=0;i<e.ulimit.processes.length;i++)if(String(e.ulimit.processes[i].pid)===pid){e.ulimit.processes[i].mem=b|0;return true}return false}
+        },
         exit:function(code){e.lastExitCode=code|0;return code|0},
         exitCode:function(){return e.lastExitCode},
+        proc:{
+          count:function(){return procCount()},
+          spawn:function(name,fn){return procSpawn(name,fn)},
+          kill:function(pid){return procKill(pid)},
+          list:function(){return procList()},
+          get:function(pid){pid=String(pid);var l=procList();for(var i=0;i<l.length;i++)if(String(l[i].pid)===pid)return l[i];return null},
+          limits:function(){return{soft:e.ulimit.soft,hard:e.ulimit.hard}},
+          setLimit:function(soft,hard){return procSetLimit(soft,hard)}
+        },
         /* ---- 命令 ---- */
         which:function(cmd){
           try{
@@ -3000,7 +3339,7 @@ s.register("cut",function(e) {
         register:function(name,handler){return s.register(name,handler),true},
         sleep:function(ms){return new Promise(function(r){setTimeout(r,ms)})}
       };
-      /* 标准库：专供外部命令开发，覆盖全链路 */
+      /* 标准库：专供外部命令开发，精简但覆盖全链路 */
       var __stdlib={
         fs:{
           read:function(p){try{return webfs.read(p)||""}catch(e){return null}},
@@ -3046,6 +3385,13 @@ s.register("cut",function(e) {
           exit:function(c){return __sys.exit(c)},
           exitCode:function(){return e.lastExitCode},
           pid:function(){return e.pid},
+          signal:{
+            on:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};(e.signals[sig]=e.signals[sig]||[]).push(fn);return true},
+            off:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};var a=e.signals[sig]||[];if(fn){var i=a.indexOf(fn);if(i>-1)a.splice(i,1)}else delete e.signals[sig];return true},
+            emit:function(sig){return emitSig(sig)},
+            list:function(){e.signals=e.signals||{};return Object.keys(e.signals).slice()},
+            traps:function(){e.traps=e.traps||{};return Object.keys(e.traps).slice()}
+          },
           which:function(c){return __sys.which(c)},
           exec:function(c){return b(c)},
           sleep:function(ms){return __sys.sleep(ms)}
@@ -3056,7 +3402,26 @@ s.register("cut",function(e) {
           get:function(n){return s.getHandler(n)},
           list:function(){return s.registered.slice()},
           execute:function(n,args){return s.execute(n,args||[])},
-          unregister:function(n){if(s.has(n)){delete s.handlers[n];var i=s.registered.indexOf(n);if(i>-1)s.registered.splice(i,1);return true}return false}
+          unregister:function(n){if(s.has(n)){delete s.handlers[n];var i=s.registered.indexOf(n);if(i>-1)s.registered.splice(i,1);return true}return false},
+          spawn:function(name,fn){return procSpawn(name,fn)},
+          kill:function(pid){return procKill(pid)},
+          list:function(){return procList()},
+          count:function(){return procCount()},
+          get:function(pid){pid=String(pid);var l=procList();for(var i=0;i<l.length;i++)if(String(l[i].pid)===pid)return l[i];return null},
+          limits:function(){return{soft:e.ulimit.soft,hard:e.ulimit.hard}},
+          setLimit:function(soft,hard){return procSetLimit(soft,hard)},
+          pid:function(){return e.pid},
+          signal:{
+            on:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};(e.signals[sig]=e.signals[sig]||[]).push(fn);return true},
+            off:function(sig,fn){sig=String(sig).toUpperCase();if(sig.indexOf("SIG")!==0)sig="SIG"+sig;e.signals=e.signals||{};var a=e.signals[sig]||[];if(fn){var i=a.indexOf(fn);if(i>-1)a.splice(i,1)}else delete e.signals[sig];return true},
+            emit:function(sig){return emitSig(sig)},
+            list:function(){e.signals=e.signals||{};return Object.keys(e.signals).slice()},
+            traps:function(){e.traps=e.traps||{};return Object.keys(e.traps).slice()}
+          },
+          setMem:function(pid,b){pid=String(pid);for(var i=0;i<e.ulimit.processes.length;i++)if(String(e.ulimit.processes[i].pid)===pid){e.ulimit.processes[i].mem=b|0;return true}return false},
+          mem:function(pid){pid=String(pid);var l=procList();for(var i=0;i<l.length;i++)if(String(l[i].pid)===pid)return l[i].mem||0;return 0},
+          oomKill:function(){return oomKill()},
+          oomLimit:function(n){if(n!=null)e.oomLimit=n|0;return e.oomLimit||1048576}
         },
         utils:{
           esc:function(s){return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")},
@@ -3069,7 +3434,7 @@ s.register("cut",function(e) {
         }
       };
       window.wemlinux={
-        version:"2.3",
+        version:"2.4",
         author:"evo",
         name:"WemLinux",
         webfs:window.webfs,
