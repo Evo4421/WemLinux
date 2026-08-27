@@ -2,7 +2,7 @@
 
 WemLinux 是一个跑在浏览器里的精简版linux环境：它用内存模拟了一个完整文件系统（webfs），内置一个支持管道、重定向、变量、函数和控制流的 shell，全部打包在**一个 js 文件**里。这个教程会带你从"会跑命令"到"能自己写命令、操作文件系统、调用全部 API"。
 
-当前版本：**wemlinux2 v2.3**（作者 Evo，MIT License）
+当前版本：**wemlinux2 v2.4**（作者 Evo，MIT License）
 
 ---
 
@@ -24,6 +24,7 @@ WemLinux 是一个跑在浏览器里的精简版linux环境：它用内存模拟
   - [stdlib.proc：命令管理](#stdlibproc命令管理)
   - [stdlib.utils：小工具](#stdlibutils小工具)
 - [实战：写一个完整的自定义命令](#实战写一个完整的自定义命令)
+- [虚拟进程与信号系统（2.4 添加）](#虚拟进程与信号系统24-添加)
 - [system 速览（__sys）](#system-速览sys)
 - [内置命令速查表](#内置命令速查表)
 - [浏览器要求与 License](#浏览器要求与-license)
@@ -90,6 +91,8 @@ WemLinux 由四个层次组成，理解它们的关系，后面学 API 就不晕
 ```
 
 **一句话记忆**：shell 负责"说话"，commandRouter 负责"找人办事"，webfs 负责"存东西"，stdlib 是"给你的工具箱"。
+
+**⑤ 虚拟进程（2.4 添加）**：从 v2.4 起，WemLinux 多了一层「虚拟进程」——它是整个系统的一等公民，也是最核心的概念。webfs 管"存东西"，而虚拟进程管"干活"：让多个程序同时跑、发信号控制它们、暂停/恢复/杀掉。后面有专门一章。
 
 接下来，我们从最底层的 webfs 开始，一层层往上。
 
@@ -333,7 +336,7 @@ await window.executeShellCommand('pwd'); // "/etc"
 | `path` | 路径拼接与解析 | 拼路径、取文件名 |
 | `io` | 输出到命令结果 | 命令要打印多行内容 |
 | `sys` | 环境变量/目录/进程 | 命令要读环境、看当前目录 |
-| `proc` | 命令注册/调用 | 注册命令、调用别的命令 |
+| `proc` | 命令注册/调用 + 虚拟进程 | 注册命令、调用命令、spawn 进程（2.4 添加） |
 | `utils` | 字符串/数字小工具 | 转义、格式化、补零 |
 
 取用方式（推荐先存成短变量）：
@@ -597,6 +600,8 @@ proc.unregister(name);          // 清理
 ```
 
 > proc.register 和 window.registerCommand 效果一样，选哪个都行。区别：proc 在标准库里，写命令代码时不用跳出到全局。
+>
+> **v2.4 新增：proc 也是虚拟进程的入口**——`proc.spawn` / `proc.kill` / `proc.list` / `proc.get` / `proc.count` / `proc.limits` / `proc.setLimit`，详见下方「虚拟进程与信号系统」一章。
 
 ---
 
@@ -712,6 +717,138 @@ todo list
 
 ---
 
+## 虚拟进程与信号系统（2.4 添加）
+
+从 v2.4 开始，WemLinux 引入了 **虚拟进程**——它是整个系统的**一等公民**，也是 v2.4 最重要的概念。虚拟进程让 shell 里能真正地"同时"跑多个程序、控制它们的生与死、暂停与恢复，并配有一整套**信号机制**。如果说 webfs 是"存东西"的地方，那虚拟进程就是"干活"的地方。
+
+### 进程：spawn 一个虚拟进程
+
+`stdlib.proc.spawn` 创建一个虚拟进程。它返回一个带 `pid`（进程号）的对象，进程有自己的 `status`、`cwd`、`started` 时间等状态：
+
+```js
+const proc = window.wemlinux.stdlib.proc;
+
+// 创建一个虚拟进程，名字叫 myjob
+const r = proc.spawn('myjob', (p) => {
+  console.log('进程 ' + p.pid + ' 跑起来了');
+  return new Promise(res => setTimeout(() => { console.log('干完活'); res(); }, 1000));
+});
+// r => { ok: true, pid: 2, proc: { pid:2, name:"myjob", status:"running", ... } }
+```
+
+- `fn` 是进程要做的事，收到进程对象 `p`。返回 Promise 时，resolve 后进程自动变 `exited`。
+- `proc.list()` 列出所有活跃进程；`proc.get(pid)` 按 pid 查；`proc.count()` 返回活跃数。
+- `proc.kill(pid)` 终止进程。
+
+**进程状态机**：`running`（运行中）→ `stopped`（被 STOP 暂停）→ `exited`（退出）。`exited` 和 `zombie` 都不算活跃，不会出现在 `proc.list()` 里。
+
+### 进程列表与 `ps`
+
+```js
+proc.list();
+// [{ pid:2, name:"myjob", status:"running", active:true, cwd:"/", started:..., exitCode:0, mem:0 }, ...]
+```
+
+shell 里用 `ps` 查看所有进程，`top` 看监控视图。
+
+### 信号系统
+
+信号是进程间通信的"暗号"。WemLinux 支持一整套：`SIGHUP(1)` `SIGINT(2)` `SIGQUIT(3)` … `SIGKILL(9)` `SIGTERM(15)` `SIGCONT(18)` `SIGSTOP(19)` 等。
+
+**发信号：`kill` 命令**
+
+```bash
+sleep 100 &        # 后台跑一个任务，返回 [1] 1234
+kill -9 1234       # 强杀（SIGKILL）
+kill -TERM 1234    # 温和终止（SIGTERM）
+kill -19 1234      # 暂停（SIGSTOP）
+kill -18 1234      # 继续（SIGCONT）
+kill -l            # 列出所有信号
+```
+
+**捕获信号：`trap` 命令**——给某个信号挂一段命令，收到信号时执行：
+
+```bash
+trap 'echo 收到中断' INT   # 捕获 INT（Ctrl-C）
+trap - INT                  # 清除
+trap -l                     # 列出信号
+```
+
+**在程序里监听信号**（`stdlib.sys.signal`）：
+
+```js
+const sys = window.wemlinux.stdlib.sys;
+sys.signal.on('INT', () => console.log('我被 Ctrl-C 打断了'));
+sys.signal.off('INT');   // 移除监听
+sys.signal.list();       // ["SIGINT", ...]
+```
+
+### 作业控制：后台 `&`、jobs、bg/fg、wait
+
+```bash
+sleep 3 &          # 后台运行，返回 [1] 1234
+jobs               # 显示 Running / Done
+wait               # 等待所有后台任务结束
+fg                 # 把后台任务调到前台
+bg                 # 恢复一个被暂停的后台任务
+```
+
+### 资源限制：ulimit
+
+限制同时能跑的虚拟进程数量，避免失控：
+
+```bash
+ulimit -n          # 显示 soft 上限（默认 256）
+ulimit -a          # 显示 soft 与 hard
+ulimit -n 300      # 设 soft 为 300（不能超过 hard）
+```
+
+```js
+proc.limits();          // { soft:256, hard:512 }
+proc.setLimit(300, 700);// 同时改 soft 与 hard
+proc.setLimit(900, 700);// false —— soft 不能超过 hard
+```
+
+超过 soft 上限后，`spawn` 会被拒绝：`{ ok:false, error:"resource temporarily unavailable", limit:256 }`。
+
+### 子 shell 与 exec 替换
+
+```bash
+( cd /etc && pwd )   # 子 shell 里切目录，退出后父目录不受影响
+exec bash            # 用 bash 替换当前 shell
+exec -l sh           # 以登录方式替换
+```
+
+### 受限执行：jsc 命令（2.4 添加）
+
+`jsc` 是一个**安全**的 JS 执行器：禁止操作 HTML（`document`/`window`/`navigator` 等 40+ 个 DOM 全局全部被屏蔽），只允许用 JS 语法和 wemlinux2 标准库，适合跑不可信的脚本：
+
+```bash
+jsc "1+1"                                      # 2 —— 表达式直接出结果
+jsc "typeof document"                          # undefined —— 碰不到 DOM
+jsc "module.exports=function(a){return a[0]}"  hello   # hello
+jsc /path/to/script.js                          # 受限执行一个 .js 文件
+```
+
+而 `source` / `.` 现在也能直接加载 `.js` 文件，且和可执行文件一样**完全开放**（无 DOM 限制）：
+
+```bash
+source my.js     # 完全开放地执行 JS 文件
+. my.js          # 等价
+```
+
+### Shell 执行引擎增强（2.4 添加）
+
+v2.4 还升级了命令解析器：
+
+- **多行块**：`if/while/for/case/function` 支持跨行书写
+- **命令替换 `$()`**：支持含空格、嵌套、前后拼接（`a$(echo b)c`）
+- **test 逻辑操作符**：`!` / `-a` / `-o`，以及 `==`
+- **`&&` / `||` 修复**：不再被误判为后台任务
+- **单双引号语义**对齐 bash：单引号内变量/命令替换不展开，双引号正常展开
+
+---
+
 ## system 速览（__sys）
 
 `window.wemlinux.system`（即 `__sys`）是更底层的接口，主要给**宿主环境**（页面脚本、机器人框架）用。写自定义命令优先用 stdlib，这里列出来备用：
@@ -728,6 +865,8 @@ todo list
 | 异常 | `system.catch_excp(fn)` | 同步+异步统一捕获，返回 `{ok, value}` |
 | 软链接 | `system.softlink.create/target/isLink/resolve` | 软链接全套 |
 | 进程 | `system.pid()` / `system.exit(c)` / `system.exitCode()` | 进程与退出码 |
+| 虚拟进程（2.4） | `proc.spawn(name,fn)` / `proc.kill(pid)` / `proc.list()` / `proc.limits()` | 创建/杀/列虚拟进程、查看上限 |
+| 信号（2.4） | `system.signal.on(sig,fn)` / `off` / `list`；`window.emitSig(sig)` | 监听/移除信号、发射信号 |
 | 命令 | `system.which(cmd)` / `system.exec(cmd)` / `system.register(name, fn)` | 找命令/执行/注册 |
 | 延时 | `system.sleep(ms)` | Promise 延时 |
 
@@ -760,7 +899,10 @@ const r = sys.getargs(['serve', '--port', '8080', '-v', 'file.txt'], {
 
 **控制流**：`if` `then` `else` `fi` `for` `while` `do` `done` `case` `esac` `break` `continue` `return` `function`
 
-**进程与系统**：`ps` `top` `kill` `killall` `jobs` `bg` `fg` `nice` `sleep` `time` `times` `uptime` `free` `dmesg` `uname` `hostname` `last` `w` `who` `whoami` `id`
+**进程与系统**：`ps` `top` `kill` `killall` `jobs` `bg` `fg` `wait` `nice` `sleep` `time` `times` `uptime` `free` `dmesg` `uname` `hostname` `last` `w` `who` `whoami` `id`
+　　（v2.4 强化：`kill` 支持 `-9/-TERM/-19/-18/-l`，新增 `trap`、`ulimit`）
+
+**受限执行（2.4 添加）**：`jsc`（安全 JS，禁止操作 HTML）
 
 **网络（模拟）**：`ping` `curl` `wget` `ifconfig` `netstat` `nslookup`
 
